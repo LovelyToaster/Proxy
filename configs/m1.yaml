@@ -1,0 +1,13 @@
+version: 1
+network:
+  connect_timeout: 10s
+  idle_timeout: 5m
+  max_connections: 256
+capture:
+  mode: off
+outbounds:
+  direct:
+    type: direct
+routing:
+  rules:
+    - outbound: direct

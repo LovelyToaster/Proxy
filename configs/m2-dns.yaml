@@ -1,0 +1,23 @@
+version: 1
+capture:
+  mode: off
+outbounds:
+  direct:
+    type: direct
+routing:
+  rules:
+    - outbound: direct
+
+dns:
+  enabled: true
+  listen: ["127.0.0.1:15353", "[::1]:15353"]
+  timeout: 4s
+  cache:
+    enabled: true
+    max_entries: 4096
+  upstreams:
+    secure:
+      type: doh
+      address: https://1.1.1.1/dns-query
+  rules:
+    - upstream: secure

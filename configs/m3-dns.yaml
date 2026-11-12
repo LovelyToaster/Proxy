@@ -1,0 +1,18 @@
+version: 1
+capture:
+  mode: off
+outbounds:
+  direct:
+    type: direct
+routing:
+  rules:
+    - outbound: direct
+dns:
+  enabled: true
+  listen: ["127.0.0.1:15353", "[::1]:15353"]
+  timeout: 4s
+  upstreams:
+    system:
+      type: system
+  rules:
+    - upstream: system

@@ -1,0 +1,5 @@
+# Copy into a proxyd.service.d drop-in and provide the pre-created namespace path.
+[Service]
+NetworkNamespacePath=/run/netns/proxy-test
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE

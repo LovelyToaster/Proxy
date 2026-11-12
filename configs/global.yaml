@@ -1,0 +1,22 @@
+version: 1
+capture:
+  scope: global
+  ipv4: true
+  ipv6: true
+  port: 15080
+  udp: true
+outbounds:
+  direct:
+    type: direct
+routing:
+  rules:
+    - outbound: direct
+dns:
+  enabled: true
+  hijack: true
+  upstreams:
+    default:
+      type: udp
+      address: 1.1.1.1:53
+  rules:
+    - upstream: default

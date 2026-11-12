@@ -1,0 +1,31 @@
+[Unit]
+Description=Proxy TCP/UDP and DNS service
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=proxyd
+Group=proxyd
+RuntimeDirectory=proxyd
+RuntimeDirectoryMode=0700
+StateDirectory=proxyd
+StateDirectoryMode=0700
+Environment=PROXY_CAPTURE_LOCK_DIR=/run/proxyd
+ExecStart=/usr/local/bin/proxy --service-run --config /etc/proxy/proxy.yaml --runtime /var/lib/proxyd
+ExecReload=/usr/local/bin/proxy --runtime /var/lib/proxyd reload
+ExecStopPost=/usr/local/bin/proxy --runtime /var/lib/proxyd capture-cleanup
+Restart=on-failure
+RestartSec=2
+WatchdogSec=8
+TimeoutStopSec=30
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

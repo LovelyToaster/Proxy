@@ -1,0 +1,5 @@
+# Install as proxyd.service.d/global.conf; use a dedicated proxyd UID.
+# Keep the service in the host namespace. Do not combine with capture.conf.example.
+[Service]
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE

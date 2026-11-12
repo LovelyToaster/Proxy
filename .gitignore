@@ -1,0 +1,42 @@
+# Distribution and packaged artifacts
+dist/
+
+# Test artifacts and acceptance logs
+artifacts/
+
+# Agent docs and internal records
+.agents/
+
+# Binaries and build outputs
+*.exe
+*.exe~
+*.dll
+*.sys
+*.dylib
+*.so
+platform/windows/wfp-driver/out/
+platform/windows/wfp-driver/x64/
+platform/windows/wfp-driver/ARM64/
+
+# Visual Studio / MSBuild files
+*.suo
+*.user
+*.userosv
+*.tlog
+*.log
+*.pdb
+*.obj
+*.recipe
+*.lastbuildstate
+
+# Test logs and temporary files
+*.test
+*.tmp
+*.log
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
