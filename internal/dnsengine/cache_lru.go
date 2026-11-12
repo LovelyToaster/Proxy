@@ -2,6 +2,7 @@ package dnsengine
 
 import (
 	"container/list"
+	"math"
 	"sync"
 	"time"
 
@@ -91,4 +92,58 @@ func (c *lruCache) remove(item *list.Element) {
 	delete(c.items, value.key)
 	c.bytes -= value.size
 	c.lru.Remove(item)
+}
+
+func (c *lruCache) snapshot() []cacheSnapshot {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	res := make([]cacheSnapshot, 0, len(c.items))
+	for e := c.lru.Front(); e != nil; e = e.Next() {
+		val := e.Value.(*cacheValue)
+		res = append(res, cacheSnapshot{
+			Key:      val.key,
+			Response: val.response.Copy(),
+			Stored:   val.stored,
+			TTL:      val.ttl,
+			Frequent: false,
+		})
+	}
+	return res
+}
+
+func (c *lruCache) restore(items []cacheSnapshot, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, item := range items {
+		if item.Response == nil {
+			continue
+		}
+		age := uint32(now.Sub(item.Stored) / time.Second)
+		staleLimit := item.TTL
+		if c.stale.enabled {
+			staleLimit += uint32(math.Ceil(c.stale.staleTTL.Seconds()))
+		}
+		if age >= staleLimit {
+			continue
+		}
+		size := item.Response.Len()
+		if size > 16384 || c.max <= 0 {
+			continue
+		}
+		if previous := c.items[item.Key]; previous != nil {
+			c.remove(previous)
+		}
+		val := &cacheValue{
+			key:      item.Key,
+			response: item.Response,
+			stored:   item.Stored,
+			ttl:      item.TTL,
+			size:     size,
+		}
+		c.items[item.Key] = c.lru.PushFront(val)
+		c.bytes += size
+		for len(c.items) > c.max || c.bytes > cacheByteLimit {
+			c.remove(c.lru.Back())
+		}
+	}
 }

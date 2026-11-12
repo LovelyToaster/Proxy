@@ -49,6 +49,8 @@ type dnsCache interface {
 	clear()
 	size() int
 	capacity() int
+	snapshot() []cacheSnapshot
+	restore(items []cacheSnapshot, now time.Time)
 }
 
 func newCache(maximum int) dnsCache {

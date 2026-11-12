@@ -111,7 +111,7 @@ func Load(path string) (Config, error) {
 		Version: 1,
 		Network: Network{ConnectTimeout: 10 * time.Second, IdleTimeout: 5 * time.Minute, MaxConnections: 256, UDPTimeout: 60 * time.Second, MaxUDPSessions: 256},
 		Capture: Capture{Mode: "off", IPv4: true, IPv6: true, Port: 15080},
-		DNS:     DNS{Listen: []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:15353"), netip.MustParseAddrPort("[::1]:15353")}, Timeout: 4 * time.Second, Cache: DNSCache{Enabled: true, MaxEntries: 4096, Algorithm: "arc", Stale: DNSCacheStale{StaleTTL: time.Hour, ServeTTL: 5 * time.Second}}},
+		DNS:     DNS{Listen: []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:15353"), netip.MustParseAddrPort("[::1]:15353")}, Timeout: 4 * time.Second, Cache: DNSCache{Enabled: true, MaxEntries: 4096, Algorithm: "arc", Stale: DNSCacheStale{StaleTTL: time.Hour, ServeTTL: 5 * time.Second}, Persist: DNSCachePersist{File: "data/dns_cache.dat", SyncInterval: 10 * time.Minute}}},
 	}
 	info, err := file.Stat()
 	if err != nil {
@@ -138,6 +138,12 @@ func Load(path string) (Config, error) {
 	}
 	if cfg.DNS.Cache.Stale.ServeTTL == 0 {
 		cfg.DNS.Cache.Stale.ServeTTL = 5 * time.Second
+	}
+	if cfg.DNS.Cache.Persist.File == "" {
+		cfg.DNS.Cache.Persist.File = "data/dns_cache.dat"
+	}
+	if cfg.DNS.Cache.Persist.SyncInterval < 0 {
+		cfg.DNS.Cache.Persist.SyncInterval = 0
 	}
 	if cfg.DNS.Hijack != nil {
 		cfg.Capture.DNSHijack = *cfg.DNS.Hijack

@@ -287,3 +287,81 @@ func (c *arcCache) enforceByteLimit() {
 		}
 	}
 }
+
+func (c *arcCache) snapshot() []cacheSnapshot {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	res := make([]cacheSnapshot, 0, c.t1.Len()+c.t2.Len())
+	for e := c.t2.Front(); e != nil; e = e.Next() {
+		entry := e.Value.(*arcEntry)
+		if entry.value != nil && entry.value.response != nil {
+			res = append(res, cacheSnapshot{
+				Key:      entry.key,
+				Response: entry.value.response.Copy(),
+				Stored:   entry.value.stored,
+				TTL:      entry.value.ttl,
+				Frequent: true,
+			})
+		}
+	}
+	for e := c.t1.Front(); e != nil; e = e.Next() {
+		entry := e.Value.(*arcEntry)
+		if entry.value != nil && entry.value.response != nil {
+			res = append(res, cacheSnapshot{
+				Key:      entry.key,
+				Response: entry.value.response.Copy(),
+				Stored:   entry.value.stored,
+				TTL:      entry.value.ttl,
+				Frequent: false,
+			})
+		}
+	}
+	return res
+}
+
+func (c *arcCache) restore(items []cacheSnapshot, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, item := range items {
+		if item.Response == nil {
+			continue
+		}
+		age := uint32(now.Sub(item.Stored) / time.Second)
+		staleLimit := item.TTL
+		if c.stale.enabled {
+			staleLimit += uint32(math.Ceil(c.stale.staleTTL.Seconds()))
+		}
+		if age >= staleLimit {
+			continue
+		}
+		size := item.Response.Len()
+		if size > 16384 || c.c <= 0 {
+			continue
+		}
+		if elem, ok := c.items[item.Key]; ok {
+			c.removeCachedElement(elem)
+		}
+		val := &cacheValue{
+			key:      item.Key,
+			response: item.Response,
+			stored:   item.Stored,
+			ttl:      item.TTL,
+			size:     size,
+		}
+		entry := &arcEntry{
+			key:   item.Key,
+			value: val,
+		}
+		if item.Frequent {
+			entry.loc = locT2
+			c.items[item.Key] = c.t2.PushFront(entry)
+		} else {
+			entry.loc = locT1
+			c.items[item.Key] = c.t1.PushFront(entry)
+		}
+		c.bytes += size
+		for c.t1.Len()+c.t2.Len() > c.c || c.bytes > cacheByteLimit {
+			c.replace(false, c.p)
+		}
+	}
+}

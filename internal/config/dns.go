@@ -23,10 +23,11 @@ type DNS struct {
 }
 
 type DNSCache struct {
-	Enabled    bool          `yaml:"enabled"`
-	MaxEntries int           `yaml:"max_entries"`
-	Algorithm  string        `yaml:"algorithm"`
-	Stale      DNSCacheStale `yaml:"stale"`
+	Enabled    bool            `yaml:"enabled"`
+	MaxEntries int             `yaml:"max_entries"`
+	Algorithm  string          `yaml:"algorithm"`
+	Stale      DNSCacheStale   `yaml:"stale"`
+	Persist    DNSCachePersist `yaml:"persist"`
 }
 
 type DNSCacheStale struct {
@@ -40,6 +41,19 @@ func (s DNSCacheStale) IsEnabled() bool {
 		return true
 	}
 	return *s.Enabled
+}
+
+type DNSCachePersist struct {
+	Enabled      *bool         `yaml:"enabled"`
+	File         string        `yaml:"file"`
+	SyncInterval time.Duration `yaml:"sync_interval"`
+}
+
+func (p DNSCachePersist) IsEnabled() bool {
+	if p.Enabled == nil {
+		return true
+	}
+	return *p.Enabled
 }
 
 type DNSUpstream struct {
@@ -93,6 +107,9 @@ func (c *DNS) resolvePaths(directory string) {
 	if c.GeoSiteFile != "" && !filepath.IsAbs(c.GeoSiteFile) {
 		c.GeoSiteFile = filepath.Join(directory, c.GeoSiteFile)
 	}
+	if c.Cache.Persist.File != "" && !filepath.IsAbs(c.Cache.Persist.File) {
+		c.Cache.Persist.File = filepath.Join(directory, c.Cache.Persist.File)
+	}
 }
 
 func (c DNS) validate(capture Capture, listeners []Listener) error {
@@ -118,6 +135,9 @@ func (c DNS) validate(capture Capture, listeners []Listener) error {
 	}
 	if c.Cache.Stale.ServeTTL < 0 || c.Cache.Stale.ServeTTL > 60*time.Second {
 		return errors.New("dns.cache.stale.serve_ttl out of range")
+	}
+	if c.Cache.Persist.SyncInterval < 0 || c.Cache.Persist.SyncInterval > 24*time.Hour {
+		return errors.New("dns.cache.persist.sync_interval out of range")
 	}
 	seen := make(map[netip.AddrPort]bool)
 	for _, addr := range c.Listen {

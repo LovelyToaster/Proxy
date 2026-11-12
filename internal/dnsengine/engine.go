@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +32,9 @@ type Engine struct {
 	matchers         map[string]*geosite.Matcher
 	fallback         string
 	cache            dnsCache
+	cachePersist     config.DNSCachePersist
+	persistStop      chan struct{}
+	persistDone      chan struct{}
 	refreshGroup     singleflight.Group
 	workers          chan struct{}
 	queries          atomic.Uint64
@@ -81,9 +85,23 @@ func New(cfg config.DNS, dialer net.Dialer, outboundSets ...map[string]config.Ou
 			serveTTL: uint32(cfg.Cache.Stale.ServeTTL.Seconds()),
 		},
 	}
+	cacheInstance := newCacheWithOptions(cacheOpts)
+	if cfg.Cache.Enabled && cfg.Cache.Persist.IsEnabled() && cfg.Cache.Persist.File != "" && entries > 0 {
+		if loaded, err := loadFromFile(cfg.Cache.Persist.File, time.Now(), cacheOpts.stale); err == nil && len(loaded) > 0 {
+			cacheInstance.restore(loaded, time.Now())
+		} else if err != nil && !os.IsNotExist(err) {
+			log.Printf("DNS cache persistence: load failed: %v", err)
+		}
+	}
 	e := &Engine{
 		listen: cfg.Listen, upstreams: make(map[string]upstream.Upstream), rules: cfg.Rules,
-		matchers: matchers, fallback: cfg.Fallback, cache: newCacheWithOptions(cacheOpts), workers: make(chan struct{}, 128),
+		matchers: matchers, fallback: cfg.Fallback, cache: cacheInstance, workers: make(chan struct{}, 128),
+		cachePersist: cfg.Cache.Persist,
+	}
+	if cfg.Cache.Enabled && cfg.Cache.Persist.IsEnabled() && cfg.Cache.Persist.File != "" && cfg.Cache.Persist.SyncInterval > 0 && entries > 0 {
+		e.persistStop = make(chan struct{})
+		e.persistDone = make(chan struct{})
+		go e.periodicSync(cfg.Cache.Persist.File, cfg.Cache.Persist.SyncInterval)
 	}
 	root := &infrastructure{cfg: cfg, matchers: matchers, dialer: dialer}
 	if len(outboundSets) > 0 {
@@ -137,6 +155,12 @@ func (e *Engine) Close() error {
 	if e == nil {
 		return nil
 	}
+	if e.persistStop != nil {
+		close(e.persistStop)
+		<-e.persistDone
+		e.persistStop = nil
+	}
+	e.savePersist()
 	e.packets.Wait()
 	var err error
 	for _, u := range e.upstreams {
@@ -164,7 +188,42 @@ func (e *Engine) Flush() error {
 	e.policyMu.RLock()
 	defer e.policyMu.RUnlock()
 	e.cache.clear()
+	if e.cachePersist.File != "" {
+		_ = os.Remove(e.cachePersist.File)
+	}
 	return nil
+}
+
+func (e *Engine) savePersist() {
+	if e == nil {
+		return
+	}
+	e.policyMu.RLock()
+	persist := e.cachePersist
+	c := e.cache
+	e.policyMu.RUnlock()
+
+	if !persist.IsEnabled() || persist.File == "" || c == nil || c.capacity() == 0 {
+		return
+	}
+	snapshots := c.snapshot()
+	if err := saveToFile(persist.File, snapshots); err != nil {
+		log.Printf("DNS cache persistence: save failed: %v", err)
+	}
+}
+
+func (e *Engine) periodicSync(file string, interval time.Duration) {
+	defer close(e.persistDone)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-e.persistStop:
+			return
+		case <-ticker.C:
+			e.savePersist()
+		}
+	}
 }
 
 func (e *Engine) policy(name string) string {
@@ -333,8 +392,21 @@ func (e *Engine) countUpstream(name string) {
 func (e *Engine) Replace(next *Engine) {
 	e.policyMu.Lock()
 	old := &Engine{upstreams: e.upstreams, bootstrap: e.bootstrap}
+	if e.persistStop != nil {
+		close(e.persistStop)
+		<-e.persistDone
+		e.persistStop = nil
+		e.persistDone = nil
+	}
 	e.upstreams, e.bootstrap, e.rules, e.matchers, e.fallback, e.cache = next.upstreams, next.bootstrap, next.rules, next.matchers, next.fallback, next.cache
 	e.infrastructure = next.infrastructure
+	e.cachePersist = next.cachePersist
+	if next.persistStop != nil {
+		e.persistStop = next.persistStop
+		e.persistDone = next.persistDone
+		next.persistStop = nil
+		next.persistDone = nil
+	}
 	e.policyMu.Unlock()
 	old.Close()
 }
