@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>透明代理控制台</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- 小屏幕侧边栏遮罩层 -->
+  <div id="sidebar-overlay" class="sidebar-overlay" onclick="toggleSidebar(false)"></div>
+
+  <!-- 左侧固定/抽屉式侧边栏 -->
+  <aside id="sidebar" class="sidebar">
+    <div class="sidebar-header">
+      <span>透明代理控制台</span>
+    </div>
+
+    <nav class="sidebar-nav">
+      <button id="nav-overview" class="nav-item active" onclick="switchTab('overview')">
+        总览
+      </button>
+      <button id="nav-logs" class="nav-item" onclick="switchTab('logs')">
+        日志
+      </button>
+    </nav>
+
+    <!-- 外观设置 -->
+    <div class="sidebar-footer">
+      <div class="theme-label">外观设置</div>
+      <div class="theme-toggle-group">
+        <button id="btn-theme-light" class="theme-btn" onclick="setTheme('light')">浅色</button>
+        <button id="btn-theme-dark" class="theme-btn" onclick="setTheme('dark')">深色</button>
+        <button id="btn-theme-auto" class="theme-btn" onclick="setTheme('auto')">跟随</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- 主内容区 -->
+  <main class="main-wrapper">
+    <!-- 顶部操作栏 -->
+    <header class="top-header">
+      <div class="top-header-left">
+        <button class="menu-toggle-btn" onclick="toggleSidebar()" title="折叠/展开侧边栏">
+          ☰
+        </button>
+        <div id="page-title" class="page-title">系统总览</div>
+      </div>
+
+      <div class="top-header-actions">
+        <button class="action-btn" onclick="fetchOverviewData()" title="刷新数据">
+          刷新数据
+        </button>
+        <button class="action-btn" onclick="flushDNS()" title="清空 DNS 缓存">
+          清空DNS
+        </button>
+        <button class="action-btn" onclick="reloadConfig()" title="重新加载配置文件">
+          重载配置
+        </button>
+      </div>
+    </header>
+
+    <!-- 视图内容区 -->
+    <div class="content-area">
+
+      <!-- 视图 1：总览 -->
+      <section id="view-overview">
+        <!-- 顶部指标卡片 -->
+        <div class="overview-grid">
+          <div class="metric-card">
+            <div class="metric-label">实际驱动</div>
+            <div id="metric-driver" class="metric-value">WinDivert</div>
+            <div id="metric-scope" class="metric-sub">范围：全局透明接管</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">当前 TCP 连接</div>
+            <div id="metric-tcp" class="metric-value">0 个活跃</div>
+            <div id="metric-tcp-sub" class="metric-sub">上限 256</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">UDP 传输统计</div>
+            <div id="metric-udp-sessions" class="metric-value">0 会话</div>
+            <div id="metric-udp-drops" class="metric-sub">丢包计数 0</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">DNS 缓存记录</div>
+            <div id="metric-dns-cached" class="metric-value">0 条 / 4096 条</div>
+            <div id="metric-dns-sub" class="metric-sub">命中率 0%</div>
+          </div>
+        </div>
+
+        <!-- 详细数据模块 (4个大小一致的标准区块) -->
+        <div class="dashboard-grid">
+          <!-- 区块 1：出站分流统计 -->
+          <div class="section-box">
+            <div class="section-title">出站分流统计</div>
+            <div id="outbound-list" class="section-content-scroll">
+              <div style="color: var(--text-muted); font-size: 14px;">暂无出站连接数据</div>
+            </div>
+            <div id="outbound-footer" class="section-footer">
+              <span>出站出口总数：0</span>
+              <span>累计总连接：0</span>
+            </div>
+          </div>
+
+          <!-- 区块 2：活跃连接列表 -->
+          <div class="section-box">
+            <div class="section-title">活跃连接列表</div>
+            <div class="table-scroll-container">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>编号</th>
+                    <th>源地址</th>
+                    <th>目标地址</th>
+                    <th>出站</th>
+                    <th style="text-align: right;">持续时间</th>
+                  </tr>
+                </thead>
+                <tbody id="active-conns-body">
+                  <tr>
+                    <td colspan="5" style="text-align: center; color: var(--text-muted); padding: 16px 0;">当前暂无活跃连接</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- 区块 3：DNS 上游分流统计 -->
+          <div class="section-box">
+            <div class="section-title">DNS 上游分流统计</div>
+            <div id="dns-upstream-list" class="section-content-scroll">
+              <div style="color: var(--text-muted); font-size: 14px;">暂无 DNS 上游请求数据</div>
+            </div>
+            <div id="dns-upstream-footer" class="section-footer">
+              <span>上游服务器数：0</span>
+              <span>累计总解析请求：0</span>
+            </div>
+          </div>
+
+          <!-- 区块 4：DNS 查询分布统计 -->
+          <div class="section-box">
+            <div class="section-title">DNS 查询分布统计</div>
+            <div class="pie-wrapper">
+              <div class="pie-canvas-box">
+                <canvas id="dns-pie-canvas" width="180" height="180"></canvas>
+              </div>
+              <div class="pie-legend" id="dns-pie-legend">
+                <!-- 动态图例项 -->
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 视图 2：日志 -->
+      <section id="view-logs" class="logs-view hidden">
+        <div class="logs-toolbar">
+          <input type="text" id="log-search" class="log-search-input" placeholder="按关键词过滤日志..." oninput="filterLogs()">
+          <div class="logs-controls">
+            <label class="checkbox-label">
+              <input type="checkbox" id="auto-scroll-toggle" checked onchange="toggleAutoScroll(this.checked)">
+              <span>自动滚动</span>
+            </label>
+            <button class="action-btn" id="btn-pause-stream" onclick="toggleStream()">暂停</button>
+            <button class="action-btn" onclick="clearLogs()">清屏</button>
+            <button class="action-btn" onclick="exportLogs()">导出</button>
+            <span id="log-count" style="color: var(--text-muted); font-family: monospace; font-size: 11px;">0 行</span>
+          </div>
+        </div>
+
+        <div class="terminal-box">
+          <div id="log-terminal" class="terminal-content"></div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

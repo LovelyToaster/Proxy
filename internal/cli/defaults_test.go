@@ -29,6 +29,14 @@ func TestUserConfigurationDefaultAndOverride(t *testing.T) {
 	if err := Run(args, &output); err != nil {
 		t.Fatal(err)
 	}
+	output.Reset()
+	if err := Run([]string{"--config", filepath.Join(dir, "proxy.yaml"), "web"}, &output); err != nil {
+		t.Fatalf("proxy web failed: %v", err)
+	}
+	if !strings.Contains(output.String(), "http://127.0.0.1:9100") {
+		t.Fatalf("unexpected proxy web output: %s", output.String())
+	}
+
 	invalid := filepath.Join(home, "invalid.yaml")
 	if err := os.WriteFile(invalid, []byte("unknown: true\n"), 0600); err != nil {
 		t.Fatal(err)

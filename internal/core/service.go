@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"net/netip"
 	"path/filepath"
 	"sort"
@@ -25,6 +26,7 @@ import (
 	"proxy.local/m0/internal/routing"
 	"proxy.local/m0/internal/session"
 	"proxy.local/m0/internal/stream"
+	"proxy.local/m0/internal/web"
 )
 
 const Version = "0.1.0-m3"
@@ -39,6 +41,7 @@ type connection struct {
 }
 
 type state struct {
+	configPath       string
 	applyAutostart   func(bool) error
 	runtimeDirectory string
 	mu               sync.Mutex
@@ -131,6 +134,7 @@ func ServeReadyManaged(parent context.Context, path, directory string, ready fun
 	}
 	state := &state{cfg: cfg, routes: routes, generation: 1, active: make(map[uint64]connection), connected: make(map[string]uint64), store: store, geo: manifest, geoTimer: make(chan struct{}, 1)}
 	state.runtimeDirectory = directory
+	state.configPath = path
 	state.applyAutostart = apply
 	state.udp = session.NewUDP(state.resolveUDP)
 	defer state.udp.Close()
@@ -173,6 +177,25 @@ func ServeReadyManaged(parent context.Context, path, directory string, ready fun
 		closePackets(packets)
 		closeControl()
 		return err
+	}
+
+	var webServer *web.Server
+	if cfg.Web.Enabled && cfg.Web.Listen != "" {
+		var err error
+		webServer, err = web.New(cfg.Web.Listen, state)
+		if err != nil {
+			closeListeners(listeners)
+			closePackets(packets)
+			closeControl()
+			return fmt.Errorf("web dashboard: %w", err)
+		}
+		log.Printf("web dashboard listening on http://%s", webServer.Addr().String())
+		go func() {
+			if err := webServer.Serve(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("web server error: %v", err)
+			}
+		}()
+		defer webServer.Close()
 	}
 
 	dnsServers, err := state.dns.Start()
@@ -393,7 +416,13 @@ func (s *state) serveTCP(ctx context.Context, listener capture.Listener, workers
 		dialer := s.dns.Dialer(capture.Dialer(s.cfg.Capture))
 		s.nextID++
 		id := s.nextID
-		s.active[id] = connection{id, tcp.RemoteAddr().String(), target, name, s.generation, time.Now()}
+		source := tcp.RemoteAddr().String()
+		if listener.Source != nil {
+			if src, err := listener.Source(tcp); err == nil && src.IsValid() {
+				source = src.String()
+			}
+		}
+		s.active[id] = connection{id, source, target, name, s.generation, time.Now()}
 		s.mu.Unlock()
 
 		workers.Go(func() {
@@ -516,4 +545,111 @@ func (s *state) handle(ctx context.Context, command, path string) (any, error) {
 	default:
 		return nil, fmt.Errorf("unknown IPC command %q", command)
 	}
+}
+
+func (s *state) Overview() (web.OverviewData, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	connected := make(map[string]uint64, len(s.connected))
+	for k, v := range s.connected {
+		connected[k] = v
+	}
+
+	activeConns := make([]web.ActiveConn, 0, len(s.active))
+	now := time.Now()
+	for _, item := range s.active {
+		dur := web.FormatDurationChinese(now.Sub(item.Started))
+		activeConns = append(activeConns, web.ActiveConn{
+			ID:          item.ID,
+			Source:      item.Source,
+			Destination: item.Destination.String(),
+			Outbound:    item.Outbound,
+			Duration:    dur,
+		})
+	}
+	sort.Slice(activeConns, func(i, j int) bool { return activeConns[i].ID < activeConns[j].ID })
+
+	udp := s.udp.Stats()
+	if s.kernelUDPDrops != nil {
+		if drops, err := s.kernelUDPDrops(); err == nil {
+			udp.KernelDropped = &drops
+		}
+	}
+	if s.captureUDPDrops != nil {
+		if drops, err := s.captureUDPDrops(); err == nil {
+			udp.CaptureDropped = &drops
+		}
+	}
+
+	driver := s.cfg.Capture.Mode
+	if driver == "" || driver == "off" {
+		driver = "未启用"
+	} else {
+		switch strings.ToLower(driver) {
+		case "windivert":
+			driver = "WinDivert"
+		case "tproxy":
+			driver = "TPROXY"
+		case "redirect":
+			driver = "Redirect"
+		}
+	}
+
+	dnsOverview := web.DNSOverview{Enabled: s.dns != nil}
+	if s.dns != nil {
+		dnsStat := s.dns.Status()
+		dnsOverview.Queries = dnsStat.Queries
+		dnsOverview.CacheHits = dnsStat.CacheHits
+		dnsOverview.StaleHits = dnsStat.StaleHits
+		if dnsStat.CacheHits >= dnsStat.StaleHits {
+			dnsOverview.FreshHits = dnsStat.CacheHits - dnsStat.StaleHits
+		}
+		dnsOverview.Failures = dnsStat.Failures
+		dnsOverview.Fallbacks = dnsStat.Fallbacks
+		dnsOverview.Cached = dnsStat.Cached
+		dnsOverview.MaxEntries = s.cfg.DNS.Cache.MaxEntries
+		if dnsOverview.MaxEntries == 0 {
+			dnsOverview.MaxEntries = 4096
+		}
+		totalResolved := dnsStat.CacheHits + dnsStat.Failures
+		if dnsStat.Queries > totalResolved {
+			dnsOverview.OtherQueries = dnsStat.Queries - totalResolved
+		}
+		if dnsStat.Queries > 0 {
+			hitRate := float64(dnsStat.CacheHits) / float64(dnsStat.Queries) * 100.0
+			dnsOverview.HitRate = fmt.Sprintf("%.1f%%", hitRate)
+		} else {
+			dnsOverview.HitRate = "0%"
+		}
+		dnsOverview.UpstreamRequests = dnsStat.UpstreamRequests
+	}
+
+	return web.OverviewData{
+		Driver:      driver,
+		Scope:       web.ScopeText(s.cfg.Capture.Scope, s.cfg.Capture.Mode, s.cfg.Capture.IPv4, s.cfg.Capture.IPv6),
+		Generation:  s.generation,
+		ActiveTCP:   len(s.active),
+		MaxTCP:      s.cfg.Network.MaxConnections,
+		Connected:   connected,
+		ActiveConns: activeConns,
+		UDPStats:    udp,
+		DNSStats:    dnsOverview,
+	}, nil
+}
+
+func (s *state) Logs(after uint64) logbuffer.Snapshot {
+	return logbuffer.Default.Read(after)
+}
+
+func (s *state) FlushDNS() error {
+	if s.dns == nil {
+		return errors.New("DNS is disabled")
+	}
+	return s.dns.Flush()
+}
+
+func (s *state) Reload() error {
+	_, err := s.reload(s.configPath)
+	return err
 }

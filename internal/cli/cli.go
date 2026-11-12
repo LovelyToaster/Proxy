@@ -197,6 +197,24 @@ func Run(args []string, out io.Writer) error {
 			}
 		}
 		root.AddCommand(request("status", "status"), request("reload", "reload"), stop)
+		webCmd := &cobra.Command{
+			Use:   "web",
+			Short: "Display the web dashboard address",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				cfg, err := config.Load(configPath)
+				if err != nil {
+					return err
+				}
+				addr := "127.0.0.1:9100"
+				if cfg.Web.Listen != "" {
+					addr = cfg.Web.Listen
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "http://%s\n", addr)
+				return nil
+			},
+		}
+		root.AddCommand(webCmd)
 		var follow bool
 		logs := &cobra.Command{Use: "logs", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 			path, err := filepath.Abs(directory)

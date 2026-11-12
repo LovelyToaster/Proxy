@@ -9,6 +9,7 @@ import (
 type Listener struct {
 	net.Listener
 	Destination   func(*net.TCPConn) (netip.AddrPort, error)
+	Source        func(*net.TCPConn) (netip.AddrPort, error)
 	PrepareDialer func(*net.TCPConn, net.Dialer) (net.Dialer, error)
 	Transparent   bool
 }

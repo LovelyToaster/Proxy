@@ -137,3 +137,51 @@ func TestDNSCacheConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestWebConfig(t *testing.T) {
+	cfg, _, err := loadText(t, minimalDNS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Web.Enabled || cfg.Web.Listen != "" {
+		t.Fatalf("expected web disabled by default: %+v", cfg.Web)
+	}
+
+	enabledText := minimalDNS + "\nweb:\n  enabled: true\n"
+	cfg, _, err = loadText(t, enabledText)
+	if err != nil {
+		t.Fatalf("web enabled failed: %v", err)
+	}
+	if !cfg.Web.Enabled || cfg.Web.Listen != "127.0.0.1:9100" {
+		t.Fatalf("expected web default listen 127.0.0.1:9100, got %+v", cfg.Web)
+	}
+
+	customText := minimalDNS + "\nweb:\n  listen: '127.0.0.1:8888'\n"
+	cfg, _, err = loadText(t, customText)
+	if err != nil {
+		t.Fatalf("web custom listen failed: %v", err)
+	}
+	if !cfg.Web.Enabled || cfg.Web.Listen != "127.0.0.1:8888" {
+		t.Fatalf("expected web enabled with custom listen, got %+v", cfg.Web)
+	}
+
+	emptyListenText := minimalDNS + "\nweb:\n  enabled: true\n  listen: ''\n"
+	cfg, _, err = loadText(t, emptyListenText)
+	if err != nil {
+		t.Fatalf("web empty listen failed: %v", err)
+	}
+	if !cfg.Web.Enabled || cfg.Web.Listen != "127.0.0.1:9100" {
+		t.Fatalf("expected web empty listen to default to 127.0.0.1:9100, got %+v", cfg.Web)
+	}
+
+	for _, invalid := range []string{
+		"web:\n  listen: 'not-an-addr'\n",
+		"web:\n  listen: '127.0.0.1:0'\n",
+		"capture:\n  mode: windivert\n  port: 15080\nweb:\n  listen: '127.0.0.1:15080'\n",
+	} {
+		bad := minimalDNS + "\n" + invalid
+		if _, _, err := loadText(t, bad); err == nil {
+			t.Fatalf("expected error for invalid web config: %s", invalid)
+		}
+	}
+}

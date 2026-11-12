@@ -439,6 +439,18 @@ func (g *Capture) Destination(conn *net.TCPConn) (netip.AddrPort, error) {
 	return flow.key.target, nil
 }
 
+func (g *Capture) Source(conn *net.TCPConn) (netip.AddrPort, error) {
+	peer := conn.RemoteAddr().(*net.TCPAddr).AddrPort()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	flow := g.reverse[peer]
+	if flow == nil {
+		return netip.AddrPort{}, errors.New("unknown WinDivert TCP alias")
+	}
+	flow.seen = time.Now()
+	return flow.key.source, nil
+}
+
 func tokenPeer(cookie uint64) netip.AddrPort {
 	addr := [16]byte{0xfd}
 	binary.BigEndian.PutUint64(addr[8:], cookie)

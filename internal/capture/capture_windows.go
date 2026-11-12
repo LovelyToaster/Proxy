@@ -180,6 +180,7 @@ func BindGuard(listeners []Listener, guard *Guard) {
 	for i := range listeners {
 		if listeners[i].Transparent {
 			listeners[i].Destination = guard.divert.Destination
+			listeners[i].Source = guard.divert.Source
 		}
 	}
 }

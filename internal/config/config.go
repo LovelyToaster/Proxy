@@ -28,6 +28,12 @@ type Config struct {
 	DNS       DNS                 `yaml:"dns"`
 	Geo       Geo                 `yaml:"geo"`
 	Service   Service             `yaml:"service"`
+	Web       Web                 `yaml:"web"`
+}
+
+type Web struct {
+	Enabled bool   `yaml:"enabled"`
+	Listen  string `yaml:"listen"`
 }
 
 type Service struct {
@@ -168,6 +174,11 @@ func Load(path string) (Config, error) {
 		cfg.Routing.GeoIPDB = filepath.Join(filepath.Dir(path), cfg.Routing.GeoIPDB)
 	}
 	cfg.DNS.resolvePaths(filepath.Dir(path))
+	if cfg.Web.Listen != "" {
+		cfg.Web.Enabled = true
+	} else if cfg.Web.Enabled {
+		cfg.Web.Listen = "127.0.0.1:9100"
+	}
 	return cfg, cfg.validate()
 }
 
@@ -242,6 +253,21 @@ func (c *Config) validate() error {
 	}
 	if err := ValidateCapture(c.Capture); err != nil {
 		return err
+	}
+	if c.Web.Enabled {
+		if c.Web.Listen == "" {
+			return errors.New("web.listen cannot be empty when web is enabled")
+		}
+		ap, err := netip.ParseAddrPort(c.Web.Listen)
+		if err != nil {
+			return fmt.Errorf("invalid web.listen address: %w", err)
+		}
+		if ap.Port() == 0 {
+			return errors.New("invalid web.listen port")
+		}
+		if c.Capture.Mode != "off" && ap.Port() == c.Capture.Port {
+			return errors.New("web.listen overlaps the capture port")
+		}
 	}
 	for i := range c.Listeners {
 		if c.Listeners[i].Network == "" {

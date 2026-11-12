@@ -20,3 +20,6 @@ dns:
       address: 1.1.1.1:53
   rules:
     - upstream: default
+web:
+  enabled: true
+  listen: "127.0.0.1:9100"
