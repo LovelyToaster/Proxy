@@ -15,6 +15,7 @@ import (
 
 	"github.com/AdguardTeam/dnsproxy/upstream"
 	"github.com/miekg/dns"
+	"golang.org/x/sync/singleflight"
 	"proxy.local/m0/internal/config"
 	"proxy.local/m0/internal/geosite"
 	"proxy.local/m0/internal/systemdns"
@@ -29,10 +30,12 @@ type Engine struct {
 	rules            []config.DNSRule
 	matchers         map[string]*geosite.Matcher
 	fallback         string
-	cache            *cache
+	cache            dnsCache
+	refreshGroup     singleflight.Group
 	workers          chan struct{}
 	queries          atomic.Uint64
 	hits             atomic.Uint64
+	staleHits        atomic.Uint64
 	fallbacks        atomic.Uint64
 	failed           atomic.Uint64
 	packets          sync.WaitGroup
@@ -44,6 +47,7 @@ type Status struct {
 	Listen           []netip.AddrPort  `json:"listen,omitempty"`
 	Queries          uint64            `json:"queries"`
 	CacheHits        uint64            `json:"cache_hits"`
+	StaleHits        uint64            `json:"stale_hits"`
 	Cached           int               `json:"cached"`
 	Fallbacks        uint64            `json:"fallbacks"`
 	Failures         uint64            `json:"failures"`
@@ -68,9 +72,18 @@ func New(cfg config.DNS, dialer net.Dialer, outboundSets ...map[string]config.Ou
 	if cfg.Cache.Enabled {
 		entries = cfg.Cache.MaxEntries
 	}
+	cacheOpts := cacheOptions{
+		algorithm:  cfg.Cache.Algorithm,
+		maxEntries: entries,
+		stale: staleOptions{
+			enabled:  cfg.Cache.Enabled && cfg.Cache.Stale.IsEnabled(),
+			staleTTL: cfg.Cache.Stale.StaleTTL,
+			serveTTL: uint32(cfg.Cache.Stale.ServeTTL.Seconds()),
+		},
+	}
 	e := &Engine{
 		listen: cfg.Listen, upstreams: make(map[string]upstream.Upstream), rules: cfg.Rules,
-		matchers: matchers, fallback: cfg.Fallback, cache: newCache(entries), workers: make(chan struct{}, 128),
+		matchers: matchers, fallback: cfg.Fallback, cache: newCacheWithOptions(cacheOpts), workers: make(chan struct{}, 128),
 	}
 	root := &infrastructure{cfg: cfg, matchers: matchers, dialer: dialer}
 	if len(outboundSets) > 0 {
@@ -140,7 +153,7 @@ func (e *Engine) Status() Status {
 	defer e.policyMu.RUnlock()
 	requests := make(map[string]uint64)
 	e.upstreamRequests.Range(func(key, value any) bool { requests[key.(string)] = value.(*atomic.Uint64).Load(); return true })
-	return Status{Enabled: true, Listen: e.listen, Queries: e.queries.Load(), CacheHits: e.hits.Load(), Cached: e.cache.size(),
+	return Status{Enabled: true, Listen: e.listen, Queries: e.queries.Load(), CacheHits: e.hits.Load(), StaleHits: e.staleHits.Load(), Cached: e.cache.size(),
 		Fallbacks: e.fallbacks.Load(), Failures: e.failed.Load(), UpstreamRequests: requests}
 }
 
@@ -209,9 +222,16 @@ func (e *Engine) answer(query *dns.Msg) *dns.Msg {
 	if _, dynamic := e.upstreams[policy].(*systemUpstream); dynamic {
 		cacheable = false
 	}
-	if cacheable && e.cache.max > 0 {
-		if found := e.cache.get(key, query, time.Now()); found != nil {
+	if cacheable && e.cache.capacity() > 0 {
+		found, state := e.cache.get(key, query, time.Now())
+		if state == entryFresh {
 			e.hits.Add(1)
+			return found
+		}
+		if state == entryStale {
+			e.hits.Add(1)
+			e.staleHits.Add(1)
+			e.refreshAsync(policy, key)
 			return found
 		}
 	}
@@ -226,10 +246,22 @@ func (e *Engine) answer(query *dns.Msg) *dns.Msg {
 	if err != nil {
 		e.failed.Add(1)
 		log.Printf("DNS upstream %s: %v", policy, err)
+		if cacheable {
+			if staleMsg, state := e.cache.get(key, query, time.Now()); state == entryStale {
+				e.staleHits.Add(1)
+				return staleMsg
+			}
+		}
 		return new(dns.Msg).SetRcode(query, dns.RcodeServerFailure)
 	}
 	if response.Rcode == dns.RcodeServerFailure {
 		e.failed.Add(1)
+		if cacheable {
+			if staleMsg, state := e.cache.get(key, query, time.Now()); state == entryStale {
+				e.staleHits.Add(1)
+				return staleMsg
+			}
+		}
 	}
 	response.Id = query.Id
 	response.Question = append(response.Question[:0], query.Question...)
@@ -238,6 +270,58 @@ func (e *Engine) answer(query *dns.Msg) *dns.Msg {
 		e.cache.put(key, response, time.Now())
 	}
 	return response
+}
+
+func (e *Engine) refreshAsync(policy string, key cacheKey) {
+	keyStr := fmt.Sprintf("%s:%s:%d:%d", key.policy, key.question.Name, key.question.Qtype, key.flags)
+	e.refreshGroup.DoChan(keyStr, func() (any, error) {
+		req := new(dns.Msg)
+		req.Id = dns.Id()
+		req.SetQuestion(key.question.Name, key.question.Qtype)
+		req.Question[0].Qclass = key.question.Qclass
+		req.RecursionDesired = (key.flags & 1) != 0
+		req.CheckingDisabled = (key.flags & 2) != 0
+		req.AuthenticatedData = (key.flags & 4) != 0
+		if (key.flags & 8) != 0 {
+			opt := new(dns.OPT)
+			opt.Hdr.Name = "."
+			opt.Hdr.Rrtype = dns.TypeOPT
+			opt.SetDo((key.flags & 16) != 0)
+			req.Extra = []dns.RR{opt}
+		}
+
+		e.policyMu.RLock()
+		up, ok := e.upstreams[policy]
+		fallbackName := e.fallback
+		var fallUp upstream.Upstream
+		if fallbackName != "" && fallbackName != policy {
+			fallUp = e.upstreams[fallbackName]
+		}
+		e.policyMu.RUnlock()
+
+		if !ok || up == nil {
+			return nil, errors.New("upstream unavailable")
+		}
+
+		e.countUpstream(policy)
+		response, err := exchange(up, req)
+		fallback := fallbackName != "" && fallbackName != policy && (err != nil || (response != nil && response.Rcode == dns.RcodeServerFailure))
+		if fallback && fallUp != nil {
+			e.fallbacks.Add(1)
+			e.countUpstream(fallbackName)
+			response, err = exchange(fallUp, req)
+		}
+		if err != nil || response == nil || response.Rcode == dns.RcodeServerFailure {
+			return nil, err
+		}
+
+		response.Id = req.Id
+		response.Question = append(response.Question[:0], req.Question...)
+		if !fallback {
+			e.cache.put(key, response, time.Now())
+		}
+		return nil, nil
+	})
 }
 
 func (e *Engine) countUpstream(name string) {

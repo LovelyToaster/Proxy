@@ -23,8 +23,23 @@ type DNS struct {
 }
 
 type DNSCache struct {
-	Enabled    bool `yaml:"enabled"`
-	MaxEntries int  `yaml:"max_entries"`
+	Enabled    bool          `yaml:"enabled"`
+	MaxEntries int           `yaml:"max_entries"`
+	Algorithm  string        `yaml:"algorithm"`
+	Stale      DNSCacheStale `yaml:"stale"`
+}
+
+type DNSCacheStale struct {
+	Enabled  *bool         `yaml:"enabled"`
+	StaleTTL time.Duration `yaml:"stale_ttl"`
+	ServeTTL time.Duration `yaml:"serve_ttl"`
+}
+
+func (s DNSCacheStale) IsEnabled() bool {
+	if s.Enabled == nil {
+		return true
+	}
+	return *s.Enabled
 }
 
 type DNSUpstream struct {
@@ -94,6 +109,15 @@ func (c DNS) validate(capture Capture, listeners []Listener) error {
 		(c.Cache.Enabled && c.Cache.MaxEntries < 1) || c.Cache.MaxEntries < 0 || c.Cache.MaxEntries > 16384 ||
 		len(c.Upstreams) == 0 || len(c.Upstreams) > 32 {
 		return errors.New("invalid DNS timeout, listener, cache or upstream limits")
+	}
+	if c.Cache.Algorithm != "" && c.Cache.Algorithm != "arc" && c.Cache.Algorithm != "lru" {
+		return errors.New("dns.cache.algorithm must be 'arc' or 'lru'")
+	}
+	if c.Cache.Stale.StaleTTL < 0 || c.Cache.Stale.StaleTTL > 24*time.Hour {
+		return errors.New("dns.cache.stale.stale_ttl out of range")
+	}
+	if c.Cache.Stale.ServeTTL < 0 || c.Cache.Stale.ServeTTL > 60*time.Second {
+		return errors.New("dns.cache.stale.serve_ttl out of range")
 	}
 	seen := make(map[netip.AddrPort]bool)
 	for _, addr := range c.Listen {

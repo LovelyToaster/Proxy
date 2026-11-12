@@ -1,14 +1,21 @@
 package dnsengine
 
 import (
-	"container/list"
-	"sync"
+	"math"
 	"time"
 
 	"github.com/miekg/dns"
 )
 
 const cacheByteLimit = 16 << 20
+
+type entryState int
+
+const (
+	entryMiss entryState = iota
+	entryFresh
+	entryStale
+)
 
 type cacheKey struct {
 	policy   string
@@ -24,16 +31,70 @@ type cacheValue struct {
 	size     int
 }
 
-type cache struct {
-	mu    sync.Mutex
-	max   int
-	bytes int
-	items map[cacheKey]*list.Element
-	lru   list.List
+type staleOptions struct {
+	enabled  bool
+	staleTTL time.Duration
+	serveTTL uint32
 }
 
-func newCache(maximum int) *cache {
-	return &cache{max: maximum, items: make(map[cacheKey]*list.Element)}
+type cacheOptions struct {
+	algorithm  string
+	maxEntries int
+	stale      staleOptions
+}
+
+type dnsCache interface {
+	get(key cacheKey, query *dns.Msg, now time.Time) (*dns.Msg, entryState)
+	put(key cacheKey, response *dns.Msg, now time.Time)
+	clear()
+	size() int
+	capacity() int
+}
+
+func newCache(maximum int) dnsCache {
+	return newCacheWithOptions(cacheOptions{
+		algorithm:  "arc",
+		maxEntries: maximum,
+	})
+}
+
+func newCacheWithOptions(opts cacheOptions) dnsCache {
+	algo := opts.algorithm
+	if algo == "" {
+		algo = "arc"
+	}
+	switch algo {
+	case "lru":
+		return newLRUCache(opts.maxEntries, opts.stale)
+	default:
+		return newARCCache(opts.maxEntries, opts.stale)
+	}
+}
+
+func (v *cacheValue) evaluate(query *dns.Msg, now time.Time, stale staleOptions) (*dns.Msg, entryState) {
+	age := uint32(now.Sub(v.stored) / time.Second)
+	if age < v.ttl {
+		result := v.response.Copy()
+		result.Id = query.Id
+		result.Question = append(result.Question[:0], query.Question...)
+		eachRR(result, func(rr dns.RR) { rr.Header().Ttl -= min(age, rr.Header().Ttl) })
+		return result, entryFresh
+	}
+	if stale.enabled {
+		staleLimit := v.ttl + uint32(math.Ceil(stale.staleTTL.Seconds()))
+		if stale.staleTTL == 0 || age < staleLimit {
+			result := v.response.Copy()
+			result.Id = query.Id
+			result.Question = append(result.Question[:0], query.Question...)
+			serveTTL := stale.serveTTL
+			if serveTTL == 0 {
+				serveTTL = 5
+			}
+			eachRR(result, func(rr dns.RR) { rr.Header().Ttl = serveTTL })
+			return result, entryStale
+		}
+	}
+	return nil, entryMiss
 }
 
 func makeKey(policy string, query *dns.Msg) (cacheKey, bool) {
@@ -65,74 +126,6 @@ func makeKey(policy string, query *dns.Msg) (cacheKey, bool) {
 	question := query.Question[0]
 	question.Name = dns.CanonicalName(question.Name)
 	return cacheKey{policy, question, flags}, true
-}
-
-func (c *cache) get(key cacheKey, query *dns.Msg, now time.Time) *dns.Msg {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	entry := c.items[key]
-	if entry == nil {
-		return nil
-	}
-	value := entry.Value.(*cacheValue)
-	age := uint32(now.Sub(value.stored) / time.Second)
-	if age >= value.ttl {
-		c.remove(entry)
-		return nil
-	}
-	c.lru.MoveToFront(entry)
-	result := value.response.Copy()
-	result.Id = query.Id
-	result.Question = append(result.Question[:0], query.Question...)
-	eachRR(result, func(rr dns.RR) { rr.Header().Ttl -= min(age, rr.Header().Ttl) })
-	return result
-}
-
-func (c *cache) put(key cacheKey, response *dns.Msg, now time.Time) {
-	size := response.Len()
-	if size > 16384 || c.max == 0 {
-		return
-	}
-	ttl := cacheTTL(response, key.question.Qtype)
-	if ttl == 0 {
-		return
-	}
-	copy := response.Copy()
-	if response.Rcode == dns.RcodeNameError || !hasAnswerType(response, key.question.Qtype) {
-		eachRR(copy, func(rr dns.RR) { rr.Header().Ttl = min(ttl, rr.Header().Ttl) })
-	}
-	value := &cacheValue{key, copy, now, ttl, size}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if previous := c.items[key]; previous != nil {
-		c.remove(previous)
-	}
-	c.items[key] = c.lru.PushFront(value)
-	c.bytes += size
-	for len(c.items) > c.max || c.bytes > cacheByteLimit {
-		c.remove(c.lru.Back())
-	}
-}
-
-func (c *cache) clear() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	clear(c.items)
-	c.lru.Init()
-	c.bytes = 0
-}
-
-func (c *cache) size() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.items)
-}
-
-func (c *cache) remove(item *list.Element) {
-	value := item.Value.(*cacheValue)
-	delete(c.items, value.key)
-	c.bytes -= value.size
-	c.lru.Remove(item)
 }
 
 func cacheTTL(response *dns.Msg, qtype uint16) uint32 {

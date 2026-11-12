@@ -199,11 +199,11 @@ func TestNegativeTTL(t *testing.T) {
 	key, _ := makeKey("primary", request)
 	now := time.Now()
 	cache.put(key, answer, now)
-	got := cache.get(key, request, now.Add(3*time.Second))
+	got, _ := cache.get(key, request, now.Add(3*time.Second))
 	if got == nil || got.Ns[0].Header().Ttl != 7 {
 		t.Fatalf("unexpected aged negative TTL: %v", got)
 	}
-	if got := cache.get(key, request, now.Add(10*time.Second)); got != nil {
+	if got, _ := cache.get(key, request, now.Add(10*time.Second)); got != nil {
 		t.Fatal("negative entry did not expire")
 	}
 }

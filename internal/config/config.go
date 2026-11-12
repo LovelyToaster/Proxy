@@ -111,7 +111,7 @@ func Load(path string) (Config, error) {
 		Version: 1,
 		Network: Network{ConnectTimeout: 10 * time.Second, IdleTimeout: 5 * time.Minute, MaxConnections: 256, UDPTimeout: 60 * time.Second, MaxUDPSessions: 256},
 		Capture: Capture{Mode: "off", IPv4: true, IPv6: true, Port: 15080},
-		DNS:     DNS{Listen: []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:15353"), netip.MustParseAddrPort("[::1]:15353")}, Timeout: 4 * time.Second, Cache: DNSCache{Enabled: true, MaxEntries: 4096}},
+		DNS:     DNS{Listen: []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:15353"), netip.MustParseAddrPort("[::1]:15353")}, Timeout: 4 * time.Second, Cache: DNSCache{Enabled: true, MaxEntries: 4096, Algorithm: "arc", Stale: DNSCacheStale{StaleTTL: time.Hour, ServeTTL: 5 * time.Second}}},
 	}
 	info, err := file.Stat()
 	if err != nil {
@@ -129,6 +129,15 @@ func Load(path string) (Config, error) {
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return Config{}, errors.New("configuration must contain one YAML document")
+	}
+	if cfg.DNS.Cache.Algorithm == "" {
+		cfg.DNS.Cache.Algorithm = "arc"
+	}
+	if cfg.DNS.Cache.Stale.StaleTTL == 0 {
+		cfg.DNS.Cache.Stale.StaleTTL = time.Hour
+	}
+	if cfg.DNS.Cache.Stale.ServeTTL == 0 {
+		cfg.DNS.Cache.Stale.ServeTTL = 5 * time.Second
 	}
 	if cfg.DNS.Hijack != nil {
 		cfg.Capture.DNSHijack = *cfg.DNS.Hijack
