@@ -9,6 +9,11 @@ import (
 )
 
 func captureFilter(c config.Capture) string {
+	req, rep := splitCaptureFilters(c)
+	return fmt.Sprintf("(%s) or (%s)", rep, req)
+}
+
+func splitCaptureFilters(c config.Capture) (string, string) {
 	var targets []string
 	for _, prefix := range c.CIDRs {
 		field := "ip.DstAddr"
@@ -60,8 +65,10 @@ func captureFilter(c config.Capture) string {
 	if c.Scope == "global" {
 		transport += " or ipv6"
 	}
-	return fmt.Sprintf("%s and ((%s and tcp.SrcPort == %d) or ((%s) and (fragment or %s)))",
-		direction, reply, c.Port, strings.Join(targets, " or "), transport)
+	replyFilter := fmt.Sprintf("%s and %s and tcp.SrcPort == %d", direction, reply, c.Port)
+	requestFilter := fmt.Sprintf("%s and (!tcp or tcp.SrcPort != %d) and (%s) and (fragment or %s)",
+		direction, c.Port, strings.Join(targets, " or "), transport)
+	return requestFilter, replyFilter
 }
 
 // Preserve the original interface, using the inbound path for non-local peers.

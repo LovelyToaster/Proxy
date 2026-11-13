@@ -23,11 +23,11 @@ const (
 )
 
 type library struct {
-	dll                                   *windows.DLL
-	open, close, recv, shutdown, getParam *windows.Proc
-	send, checksums                       *windows.Proc
-	parse                                 *windows.Proc
-	recvEx, sendEx                        *windows.Proc
+	dll                                             *windows.DLL
+	open, close, recv, shutdown, getParam, setParam *windows.Proc
+	send, checksums                                 *windows.Proc
+	parse                                           *windows.Proc
+	recvEx, sendEx                                  *windows.Proc
 }
 
 func load() (*library, string, error) {
@@ -51,7 +51,7 @@ func load() (*library, string, error) {
 	}{
 		{"WinDivertOpen", &lib.open}, {"WinDivertClose", &lib.close},
 		{"WinDivertRecv", &lib.recv}, {"WinDivertShutdown", &lib.shutdown},
-		{"WinDivertGetParam", &lib.getParam},
+		{"WinDivertGetParam", &lib.getParam}, {"WinDivertSetParam", &lib.setParam},
 		{"WinDivertSend", &lib.send}, {"WinDivertHelperCalcChecksums", &lib.checksums},
 		{"WinDivertRecvEx", &lib.recvEx}, {"WinDivertSendEx", &lib.sendEx},
 		{"WinDivertHelperParsePacket", &lib.parse},
@@ -76,6 +76,13 @@ func (l *library) openHandle(filter string, layer, flags uintptr) (uintptr, erro
 		return 0, fmt.Errorf("WinDivertOpen (administrator privileges required): %w", callErr)
 	}
 	return handle, nil
+}
+
+func (l *library) tuneHandle(handle uintptr) {
+	// 0 = WINDIVERT_PARAM_QUEUE_LENGTH, 1 = WINDIVERT_PARAM_QUEUE_TIME, 2 = WINDIVERT_PARAM_QUEUE_SIZE
+	_, _, _ = l.setParam.Call(handle, 0, 16384)
+	_, _, _ = l.setParam.Call(handle, 1, 4000)
+	_, _, _ = l.setParam.Call(handle, 2, 16<<20)
 }
 
 func (l *library) closeHandle(handle uintptr) error {

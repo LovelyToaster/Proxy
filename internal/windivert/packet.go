@@ -169,3 +169,81 @@ func (p packet) rewrite(source, target netip.AddrPort) {
 	binary.BigEndian.PutUint16(p.data[p.offset:], source.Port())
 	binary.BigEndian.PutUint16(p.data[p.offset+2:], target.Port())
 }
+
+// rewriteTCPIncremental rewrites endpoints and incrementally updates IPv4/TCP checksums (RFC 1624).
+// Returns true if checksums were updated in Go and WinDivertHelperCalcChecksums can be skipped.
+func (p packet) rewriteTCPIncremental(source, target netip.AddrPort) bool {
+	if p.protocol != 6 || len(p.data) < p.offset+20 {
+		p.rewrite(source, target)
+		return false
+	}
+	oldTCPCsum := binary.BigEndian.Uint16(p.data[p.offset+16:])
+	if oldTCPCsum == 0 {
+		p.rewrite(source, target)
+		return false
+	}
+	is4 := source.Addr().Is4()
+	var oldIPCsum uint16
+	if is4 {
+		if p.data[0] != 0x45 {
+			p.rewrite(source, target)
+			return false
+		}
+		oldIPCsum = binary.BigEndian.Uint16(p.data[10:12])
+		if oldIPCsum == 0 {
+			p.rewrite(source, target)
+			return false
+		}
+	} else if p.offset != 40 {
+		p.rewrite(source, target)
+		return false
+	}
+
+	var ipDelta, tcpDelta uint32
+	if is4 {
+		ipSub := sumSub16(p.data[12:20])
+		ipDelta += ipSub
+		tcpDelta += ipSub
+	} else {
+		tcpDelta += sumSub16(p.data[8:40])
+	}
+	tcpDelta += sumSub16(p.data[p.offset : p.offset+4])
+
+	p.rewrite(source, target)
+
+	if is4 {
+		ipAdd := sumAdd16(p.data[12:20])
+		ipDelta += ipAdd
+		tcpDelta += ipAdd
+		binary.BigEndian.PutUint16(p.data[10:12], csumUpdate(oldIPCsum, ipDelta))
+	} else {
+		tcpDelta += sumAdd16(p.data[8:40])
+	}
+	tcpDelta += sumAdd16(p.data[p.offset : p.offset+4])
+	binary.BigEndian.PutUint16(p.data[p.offset+16:], csumUpdate(oldTCPCsum, tcpDelta))
+	return true
+}
+
+func sumSub16(b []byte) uint32 {
+	var s uint32
+	for i := 0; i < len(b); i += 2 {
+		s += uint32(^binary.BigEndian.Uint16(b[i:]))
+	}
+	return s
+}
+
+func sumAdd16(b []byte) uint32 {
+	var s uint32
+	for i := 0; i < len(b); i += 2 {
+		s += uint32(binary.BigEndian.Uint16(b[i:]))
+	}
+	return s
+}
+
+func csumUpdate(old uint16, delta uint32) uint16 {
+	sum := uint32(^old) + delta
+	for sum>>16 != 0 {
+		sum = (sum & 0xffff) + (sum >> 16)
+	}
+	return ^uint16(sum)
+}

@@ -25,10 +25,18 @@ type tcpFlow struct {
 	key         flowKey
 	alias       netip.AddrPort
 	reservation *net.TCPListener
-	seen        time.Time
+	seen        atomic.Int64
 	sequence    uint32
 	address     [10]uint64
 }
+
+func (f *tcpFlow) touch(nowUnixNano int64) {
+	prev := f.seen.Load()
+	if nowUnixNano-prev > int64(time.Second) {
+		f.seen.Store(nowUnixNano)
+	}
+}
+
 type udpFlow struct {
 	key      flowKey
 	cookie   uint64
@@ -37,23 +45,35 @@ type udpFlow struct {
 	seen     time.Time
 }
 type datagram struct {
+	buf          *[]byte
 	payload      []byte
 	peer, target netip.AddrPort
+}
+
+var divertUDPPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 65535)
+		return &b
+	},
 }
 
 type Capture struct {
 	lib                *library
 	handle             uintptr
+	replyHandle        uintptr
 	config             config.Capture
-	mu                 sync.Mutex
+	mu                 sync.RWMutex
 	io                 sync.RWMutex
+	errMu              sync.Mutex
 	tcp                map[flowKey]*tcpFlow
 	reverse            map[netip.AddrPort]*tcpFlow
 	udp                map[flowKey]*udpFlow
 	tokens             map[uint64]*udpFlow
 	next               uint64
 	packets            chan datagram
-	done, stop, reaped chan struct{}
+	done               chan struct{}
+	replyDone          chan struct{}
+	stop, reaped       chan struct{}
 	closing            atomic.Bool
 	drops              atomic.Uint64
 	once               sync.Once
@@ -63,6 +83,9 @@ type Capture struct {
 	unknownHeaders     sync.Map
 	exclusions         []string
 	upstreamEndpoints  []upstreamEndpoint
+	upstreamPIDMu      sync.Mutex
+	upstreamPIDExpires time.Time
+	upstreamPIDs       map[uint32]struct{}
 	flowLimit          int
 	receivedBatches    atomic.Uint64
 	receivedPackets    atomic.Uint64
@@ -115,17 +138,27 @@ func StartCaptureResolved(c config.Capture, resolver *net.Resolver, upstreamSets
 	if err != nil {
 		return nil, err
 	}
-	handle, err := lib.openHandle(captureFilter(c), layerNetwork, 0)
+	reqFilter, repFilter := splitCaptureFilters(c)
+	handle, err := lib.openHandle(reqFilter, layerNetwork, 0)
 	if err != nil {
 		lib.dll.Release()
 		return nil, err
 	}
-	g := &Capture{lib: lib, handle: handle, config: c, tcp: make(map[flowKey]*tcpFlow), reverse: make(map[netip.AddrPort]*tcpFlow),
-		udp: make(map[flowKey]*udpFlow), tokens: make(map[uint64]*udpFlow), packets: make(chan datagram, 64),
-		done: make(chan struct{}), stop: make(chan struct{}), reaped: make(chan struct{})}
+	replyHandle, err := lib.openHandle(repFilter, layerNetwork, 0)
+	if err != nil {
+		lib.closeHandle(handle)
+		lib.dll.Release()
+		return nil, err
+	}
+	lib.tuneHandle(handle)
+	lib.tuneHandle(replyHandle)
+	g := &Capture{lib: lib, handle: handle, replyHandle: replyHandle, config: c, tcp: make(map[flowKey]*tcpFlow), reverse: make(map[netip.AddrPort]*tcpFlow),
+		udp: make(map[flowKey]*udpFlow), tokens: make(map[uint64]*udpFlow), packets: make(chan datagram, 512),
+		done: make(chan struct{}), replyDone: make(chan struct{}), stop: make(chan struct{}), reaped: make(chan struct{})}
 	g.exclusions, g.flowLimit = exclusions, limit
 	g.upstreamEndpoints = endpoints
-	go g.run()
+	go g.runHandle(g.handle, g.done, true)
+	go g.runHandle(g.replyHandle, g.replyDone, false)
 	go g.reap()
 	return g, nil
 }
@@ -133,16 +166,27 @@ func StartCaptureResolved(c config.Capture, resolver *net.Resolver, upstreamSets
 func (g *Capture) Done() <-chan struct{}     { return g.done }
 func (g *Capture) UDPDrops() (uint64, error) { return g.drops.Load(), nil }
 
+func (g *Capture) setErr(err error) {
+	if err == nil {
+		return
+	}
+	g.errMu.Lock()
+	g.err = errors.Join(g.err, err)
+	g.errMu.Unlock()
+}
+
 func (g *Capture) Close() error {
 	g.once.Do(func() {
 		g.closing.Store(true)
 		close(g.stop)
 		g.lib.shutdown.Call(g.handle, 1)
+		g.lib.shutdown.Call(g.replyHandle, 1)
 		<-g.done
+		<-g.replyDone
 		<-g.reaped
 		for _, packet := range g.fragments.Drain() {
 			if err := g.send(packet.data, &packet.address, false); err != nil {
-				g.err = errors.Join(g.err, err)
+				g.setErr(err)
 			}
 		}
 		g.mu.Lock()
@@ -155,7 +199,7 @@ func (g *Capture) Close() error {
 		g.tokens = nil
 		g.mu.Unlock()
 		g.io.Lock()
-		g.closeErr = errors.Join(g.err, g.lib.closeHandle(g.handle), g.lib.dll.Release())
+		g.closeErr = errors.Join(g.err, g.lib.closeHandle(g.handle), g.lib.closeHandle(g.replyHandle), g.lib.dll.Release())
 		g.io.Unlock()
 	})
 	return g.closeErr
@@ -164,6 +208,9 @@ func (g *Capture) Close() error {
 func (g *Capture) send(data []byte, address *[10]uint64, modified bool) error {
 	g.io.RLock()
 	defer g.io.RUnlock()
+	if g.closing.Load() {
+		return net.ErrClosed
+	}
 	if modified {
 		ok, _, err := g.lib.checksums.Call(uintptr(unsafe.Pointer(&data[0])), uintptr(len(data)), uintptr(unsafe.Pointer(address)), 0)
 		if ok == 0 {
@@ -181,9 +228,28 @@ func (g *Capture) send(data []byte, address *[10]uint64, modified bool) error {
 	return nil
 }
 
-func (g *Capture) run() {
-	defer close(g.done)
-	defer close(g.packets)
+func isNonFragmentPacket(raw []byte) bool {
+	if len(raw) < 20 {
+		return false
+	}
+	switch raw[0] >> 4 {
+	case 4:
+		return binary.BigEndian.Uint16(raw[6:8])&0x3FFF == 0
+	case 6:
+		if len(raw) < 40 {
+			return false
+		}
+		return raw[6] == 6 || raw[6] == 17
+	default:
+		return false
+	}
+}
+
+func (g *Capture) runHandle(handle uintptr, done chan struct{}, closePackets bool) {
+	defer close(done)
+	if closePackets {
+		defer close(g.packets)
+	}
 	data := make([]byte, batchBytes)
 	var addresses [batchMax][10]uint64
 	var storage [batchMax]capturedPacket
@@ -200,21 +266,21 @@ func (g *Capture) run() {
 	for {
 		var size uint32
 		addressBytes := uint32(len(addresses) * 80)
-		ok, _, err := g.lib.recvEx.Call(g.handle, uintptr(unsafe.Pointer(&data[0])), uintptr(len(data)), uintptr(unsafe.Pointer(&size)), 0,
+		ok, _, err := g.lib.recvEx.Call(handle, uintptr(unsafe.Pointer(&data[0])), uintptr(len(data)), uintptr(unsafe.Pointer(&size)), 0,
 			uintptr(unsafe.Pointer(&addresses[0])), uintptr(unsafe.Pointer(&addressBytes)), 0)
 		if ok == 0 {
 			if !g.closing.Load() {
-				g.err = fmt.Errorf("WinDivertRecvEx: %w", err)
+				g.setErr(fmt.Errorf("WinDivertRecvEx: %w", err))
 			}
 			return
 		}
 		if size == 0 || size > uint32(len(data)) || addressBytes == 0 || addressBytes%80 != 0 || addressBytes > uint32(len(addresses)*80) {
-			g.err = errors.New("invalid captured batch length")
+			g.setErr(errors.New("invalid captured batch length"))
 			return
 		}
 		packets, err := splitBatch(data[:size], addresses[:addressBytes/80], storage[:0])
 		if err != nil {
-			g.err = err
+			g.setErr(err)
 			return
 		}
 		g.receivedBatches.Add(1)
@@ -223,13 +289,13 @@ func (g *Capture) run() {
 			raw, address := captured.data, captured.address
 			if g.closing.Load() {
 				if err := emit(raw, &address, false); err != nil {
-					g.err = err
+					g.setErr(err)
 					return
 				}
 				continue
 			}
 			var originals []capturedPacket
-			if !g.closing.Load() {
+			if !g.closing.Load() && !isNonFragmentPacket(raw) {
 				assembled, held, waiting, err := g.fragments.Add(raw, address, time.Now())
 				if err != nil && !errors.Is(err, errProtected) {
 					g.packetDrops.Add(1)
@@ -277,20 +343,20 @@ func (g *Capture) run() {
 			if !modified && len(originals) > 0 {
 				for _, original := range originals {
 					if err := emit(original.data, &original.address, false); err != nil {
-						g.err = err
+						g.setErr(err)
 						return
 					}
 				}
 				continue
 			}
 			if err := emit(raw, &address, modified); err != nil {
-				g.err = err
+				g.setErr(err)
 				return
 			}
 		}
 		// Flush even a single packet immediately; do not wait for the next receive.
 		if err := output.flush(); err != nil {
-			g.err = err
+			g.setErr(err)
 			return
 		}
 	}
@@ -315,30 +381,52 @@ func loopback(ip netip.Addr) netip.Addr {
 }
 
 func (g *Capture) redirectTCP(p packet, address *[10]uint64) (bool, bool) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
 	if p.source.Port() == g.config.Port {
+		g.mu.RLock()
 		flow := g.reverse[p.target]
 		if flow == nil {
+			g.mu.RUnlock()
 			return false, false
 		}
-		flow.seen = time.Now()
-		p.rewrite(flow.key.target, flow.key.source)
-		*address = returnAddress(flow.address)
-		return true, false
+		target, source, addr := flow.key.target, flow.key.source, flow.address
+		g.mu.RUnlock()
+		flow.touch(time.Now().UnixNano())
+		needsCsum := !p.rewriteTCPIncremental(target, source)
+		*address = returnAddress(addr)
+		return needsCsum, false
 	}
 	key := flowKey{p.source, p.target}
-	flow := g.tcp[key]
 	syn := p.data[p.offset+13]&0x12 == 0x02
 	sequence := binary.BigEndian.Uint32(p.data[p.offset+4:])
+
+	g.mu.RLock()
+	flow := g.tcp[key]
+	if flow != nil && !(syn && flow.sequence != sequence) {
+		alias, addr := flow.alias, flow.address
+		g.mu.RUnlock()
+		flow.touch(time.Now().UnixNano())
+		local := loopback(p.target.Addr())
+		if addr[1]&(1<<18) == 0 {
+			local = key.source.Addr()
+			*address = returnAddress(addr)
+		}
+		needsCsum := !p.rewriteTCPIncremental(alias, netip.AddrPortFrom(local, g.config.Port))
+		return needsCsum, false
+	}
+	g.mu.RUnlock()
+
 	// Established flows already have an ownership decision. Never enumerate the
 	// system connection table for their data/ACK packets or unrelated old flows.
 	if flow == nil && !syn {
 		return false, false
 	}
-	if (flow == nil || syn && flow.sequence != sequence) && !g.selected(p) {
+	if !g.selected(p) {
 		return false, false
 	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	flow = g.tcp[key]
 	if flow != nil && syn && flow.sequence != sequence {
 		delete(g.reverse, flow.alias)
 		delete(g.tcp, key)
@@ -370,16 +458,17 @@ func (g *Capture) redirectTCP(p packet, address *[10]uint64) (bool, bool) {
 			alias = netip.AddrPortFrom(p.target.Addr(), alias.Port())
 		}
 		flow = &tcpFlow{key: key, alias: alias, reservation: reservation, sequence: sequence, address: *address}
+		flow.seen.Store(time.Now().UnixNano())
 		g.tcp[key], g.reverse[alias] = flow, flow
 	}
-	flow.seen = time.Now()
+	flow.touch(time.Now().UnixNano())
 	local := loopback(p.target.Addr())
 	if flow.address[1]&(1<<18) == 0 {
 		local = flow.key.source.Addr()
 		*address = returnAddress(flow.address)
 	}
-	p.rewrite(flow.alias, netip.AddrPortFrom(local, g.config.Port))
-	return true, false
+	needsCsum := !p.rewriteTCPIncremental(flow.alias, netip.AddrPortFrom(local, g.config.Port))
+	return needsCsum, false
 }
 
 func (g *Capture) selected(p packet) bool {
@@ -401,7 +490,28 @@ func (g *Capture) selected(p packet) bool {
 	if selfsocket.Owns(p.source, p.protocol) {
 		return false
 	}
-	return g.selectedPID(p, endpointPID(p))
+	return g.selectedPID(p, cachedEndpointPID(p))
+}
+
+func (g *Capture) isUpstreamPID(pid uint32) bool {
+	if len(g.upstreamEndpoints) == 0 {
+		return false
+	}
+	now := time.Now()
+	g.upstreamPIDMu.Lock()
+	defer g.upstreamPIDMu.Unlock()
+	if g.upstreamPIDs == nil || !now.Before(g.upstreamPIDExpires) {
+		pids := make(map[uint32]struct{}, len(g.upstreamEndpoints))
+		for _, endpoint := range g.upstreamEndpoints {
+			if p := endpointPID(packet{source: endpoint.Address, protocol: endpoint.Protocol}); p != 0 {
+				pids[p] = struct{}{}
+			}
+		}
+		g.upstreamPIDs = pids
+		g.upstreamPIDExpires = now.Add(500 * time.Millisecond)
+	}
+	_, ok := g.upstreamPIDs[pid]
+	return ok
 }
 
 func (g *Capture) selectedPID(p packet, pid uint32) bool {
@@ -411,10 +521,8 @@ func (g *Capture) selectedPID(p packet, pid uint32) bool {
 	if pid == 0 {
 		return g.config.DNSHijack && p.protocol == 17 && p.target.Port() == 53
 	}
-	for _, endpoint := range g.upstreamEndpoints {
-		if endpointPID(packet{source: endpoint.Address, protocol: endpoint.Protocol}) == pid {
-			return false
-		}
+	if g.isUpstreamPID(pid) {
+		return false
 	}
 	if len(g.exclusions) > 0 {
 		path := processPath(pid)
@@ -429,26 +537,30 @@ func (g *Capture) selectedPID(p packet, pid uint32) bool {
 
 func (g *Capture) Destination(conn *net.TCPConn) (netip.AddrPort, error) {
 	peer := conn.RemoteAddr().(*net.TCPAddr).AddrPort()
-	g.mu.Lock()
-	defer g.mu.Unlock()
+	g.mu.RLock()
 	flow := g.reverse[peer]
 	if flow == nil {
+		g.mu.RUnlock()
 		return netip.AddrPort{}, errors.New("unknown WinDivert TCP alias")
 	}
-	flow.seen = time.Now()
-	return flow.key.target, nil
+	target := flow.key.target
+	g.mu.RUnlock()
+	flow.touch(time.Now().UnixNano())
+	return target, nil
 }
 
 func (g *Capture) Source(conn *net.TCPConn) (netip.AddrPort, error) {
 	peer := conn.RemoteAddr().(*net.TCPAddr).AddrPort()
-	g.mu.Lock()
-	defer g.mu.Unlock()
+	g.mu.RLock()
 	flow := g.reverse[peer]
 	if flow == nil {
+		g.mu.RUnlock()
 		return netip.AddrPort{}, errors.New("unknown WinDivert TCP alias")
 	}
-	flow.seen = time.Now()
-	return flow.key.source, nil
+	source := flow.key.source
+	g.mu.RUnlock()
+	flow.touch(time.Now().UnixNano())
+	return source, nil
 }
 
 func tokenPeer(cookie uint64) netip.AddrPort {
@@ -474,9 +586,12 @@ func (g *Capture) queueUDP(p packet, address [10]uint64) bool {
 	flow.seen = time.Now()
 	flow.template = append(flow.template[:0], p.data[:p.payload]...)
 	flow.address = address
+	bufPtr := divertUDPPool.Get().(*[]byte)
+	n := copy(*bufPtr, p.data[p.payload:])
 	select {
-	case g.packets <- datagram{append([]byte(nil), p.data[p.payload:]...), tokenPeer(flow.cookie), p.target}:
+	case g.packets <- datagram{buf: bufPtr, payload: (*bufPtr)[:n], peer: tokenPeer(flow.cookie), target: p.target}:
 	default:
+		divertUDPPool.Put(bufPtr)
 		g.drops.Add(1)
 	}
 	return true
@@ -488,9 +603,16 @@ func (g *Capture) ReadPacket(data []byte) (int, netip.AddrPort, netip.AddrPort, 
 		return 0, netip.AddrPort{}, netip.AddrPort{}, net.ErrClosed
 	}
 	if len(p.payload) > len(data) {
+		if p.buf != nil {
+			divertUDPPool.Put(p.buf)
+		}
 		return 0, netip.AddrPort{}, netip.AddrPort{}, errors.New("captured UDP payload too large")
 	}
-	return copy(data, p.payload), p.peer, p.target, nil
+	copied := copy(data, p.payload)
+	if p.buf != nil {
+		divertUDPPool.Put(p.buf)
+	}
+	return copied, p.peer, p.target, nil
 }
 
 func (g *Capture) ReplyPacket(peer netip.AddrPort, payload []byte) error {
@@ -511,19 +633,15 @@ func (g *Capture) ReplyPacket(peer netip.AddrPort, payload []byte) error {
 		g.mu.Unlock()
 		return errors.New("expired UDP flow token")
 	}
-	template := append([]byte(nil), flow.template...)
+	tplPtr := divertUDPPool.Get().(*[]byte)
+	tn := copy(*tplPtr, flow.template)
 	address, key := returnAddress(flow.address), flow.key
 	flow.seen = time.Now()
 	g.mu.Unlock()
-	data, err := udpResponse(template, key.target, key.source, payload)
+	data, err := udpResponse((*tplPtr)[:tn], key.target, key.source, payload)
+	divertUDPPool.Put(tplPtr)
 	if err != nil {
 		return err
-	}
-	// Hold the flow lock through send so Close cannot release the DLL concurrently.
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.closing.Load() {
-		return net.ErrClosed
 	}
 	return g.send(data, &address, true)
 }
@@ -544,7 +662,7 @@ func (g *Capture) reap() {
 			g.packetDrops.Add(uint64(g.fragments.Expire(now)))
 			g.mu.Lock()
 			for key, flow := range g.tcp {
-				if now.Sub(flow.seen) > 5*time.Minute {
+				if now.Sub(time.Unix(0, flow.seen.Load())) > 5*time.Minute {
 					delete(g.tcp, key)
 					delete(g.reverse, flow.alias)
 					flow.reservation.Close()

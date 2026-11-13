@@ -15,10 +15,10 @@ func TestCaptureDestinationAndSource(t *testing.T) {
 	alias := netip.MustParseAddrPort("150.171.27.11:10708")
 
 	flow := &tcpFlow{
-		key:  flowKey{source: client, target: target},
+		key:   flowKey{source: client, target: target},
 		alias: alias,
-		seen: time.Now(),
 	}
+	flow.seen.Store(time.Now().UnixNano())
 
 	cap := &Capture{
 		reverse: map[netip.AddrPort]*tcpFlow{

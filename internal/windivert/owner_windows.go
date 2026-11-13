@@ -5,6 +5,8 @@ import (
 	"net/netip"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -14,10 +16,65 @@ var ipHelper = windows.NewLazySystemDLL("iphlpapi.dll")
 var tcpTable = ipHelper.NewProc("GetExtendedTcpTable")
 var udpTable = ipHelper.NewProc("GetExtendedUdpTable")
 
+const (
+	pidCacheTTL     = 2 * time.Second
+	udpOwnerTTL     = time.Second
+	maxOwnerEntries = 2048
+)
+
+type pidCacheEntry struct {
+	path    string
+	expires time.Time
+}
+
+type udpOwnerEntry struct {
+	pid     uint32
+	expires time.Time
+}
+
+var (
+	pidCacheMu sync.RWMutex
+	pidCache   = make(map[uint32]pidCacheEntry)
+
+	udpCacheMu sync.RWMutex
+	udpCache   = make(map[netip.AddrPort]udpOwnerEntry)
+
+	tableBufPool = sync.Pool{
+		New: func() any {
+			b := make([]byte, 32<<10)
+			return &b
+		},
+	}
+)
+
 // Verify endpoint ownership at capture time. Ambiguous or unavailable ownership is bypassed.
 func ownedBy(p packet, application string) bool {
-	pid := endpointPID(p)
+	pid := cachedEndpointPID(p)
 	return pid != 0 && pid != windows.GetCurrentProcessId() && strings.EqualFold(processPath(pid), filepath.Clean(application))
+}
+
+func cachedEndpointPID(p packet) uint32 {
+	if p.protocol != 17 {
+		return endpointPID(p)
+	}
+	now := time.Now()
+	udpCacheMu.RLock()
+	entry, ok := udpCache[p.source]
+	udpCacheMu.RUnlock()
+	if ok && now.Before(entry.expires) {
+		return entry.pid
+	}
+	pid := endpointPID(p)
+	if pid == 0 {
+		return 0
+	}
+	udpCacheMu.Lock()
+	if len(udpCache) >= maxOwnerEntries {
+		clear(udpCache)
+	}
+	udpCache[p.source] = udpOwnerEntry{pid: pid, expires: now.Add(udpOwnerTTL)}
+	udpCacheMu.Unlock()
+	return pid
 }
 
 func endpointPID(p packet) uint32 {
@@ -41,13 +98,19 @@ func endpointPID(p packet) uint32 {
 			localPort, owner, rowSize = 20, 24, 28
 		}
 	}
-	var size uint32 = 16 << 10
+	var size uint32 = 32 << 10
+	bufPtr := tableBufPool.Get().(*[]byte)
+	defer tableBufPool.Put(bufPtr)
 	var data []byte
 	for attempt := 0; attempt < 3; attempt++ {
 		if size < 4 || size > 8<<20 {
 			return 0
 		}
-		data = make([]byte, size)
+		if uint32(cap(*bufPtr)) < size {
+			b := make([]byte, size)
+			*bufPtr = b
+		}
+		data = (*bufPtr)[:size]
 		result, _, _ := proc.Call(uintptr(unsafe.Pointer(&data[0])), uintptr(unsafe.Pointer(&size)), 0, family, class, 0)
 		if result == uintptr(windows.ERROR_INSUFFICIENT_BUFFER) {
 			continue
@@ -97,6 +160,13 @@ func endpointPID(p packet) uint32 {
 }
 
 func processPath(pid uint32) string {
+	now := time.Now()
+	pidCacheMu.RLock()
+	entry, ok := pidCache[pid]
+	pidCacheMu.RUnlock()
+	if ok && now.Before(entry.expires) {
+		return entry.path
+	}
 	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
 	if err != nil {
 		return ""
@@ -107,7 +177,14 @@ func processPath(pid uint32) string {
 	if windows.QueryFullProcessImageName(process, 0, &path[0], &length) != nil {
 		return ""
 	}
-	return filepath.Clean(windows.UTF16ToString(path[:length]))
+	cleaned := filepath.Clean(windows.UTF16ToString(path[:length]))
+	pidCacheMu.Lock()
+	if len(pidCache) >= maxOwnerEntries {
+		clear(pidCache)
+	}
+	pidCache[pid] = pidCacheEntry{path: cleaned, expires: now.Add(pidCacheTTL)}
+	pidCacheMu.Unlock()
+	return cleaned
 }
 
 func tableAddress(data []byte, family uintptr) netip.Addr {

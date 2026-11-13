@@ -7,9 +7,12 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"proxy.local/m0/internal/config"
 )
 
 func TestOfficialParserIPv6Headers(t *testing.T) {
@@ -117,5 +120,53 @@ func TestUnknownPIDGlobalDNSCapture(t *testing.T) {
 	p.protocol = 17
 	if g.selectedPID(p, windows.GetCurrentProcessId()) {
 		t.Fatal("unregistered own traffic recaptured")
+	}
+}
+
+func TestSplitCaptureFiltersCompileWithOfficialDLL(t *testing.T) {
+	path, err := filepath.Abs("../../dist/windows-amd64/WinDivert.dll")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Skip("WinDivert runtime not staged")
+	}
+	dll, err := windows.LoadDLL(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dll.Release()
+	compile, err := dll.FindProc("WinDivertHelperCompileFilter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		cfg  config.Capture
+	}{
+		{name: "global-no-dns", cfg: config.Capture{Mode: "windivert", Scope: "global", Port: 15090, IPv4: true, IPv6: true, UDP: true}},
+		{name: "global-dns", cfg: config.Capture{Mode: "windivert", Scope: "global", Port: 15090, IPv4: true, IPv6: true, UDP: true, DNSHijack: true}},
+		{name: "application", cfg: config.Capture{Mode: "windivert", Scope: "application", Port: 15090, IPv4: true, IPv6: true, UDP: true}},
+		{name: "cidrs", cfg: config.Capture{Mode: "windivert", Scope: "global", Port: 15090, IPv4: true, IPv6: true, CIDRs: []netip.Prefix{netip.MustParsePrefix("198.18.0.0/16")}}},
+	}
+	for _, tc := range cases {
+		req, rep := splitCaptureFilters(tc.cfg)
+		for _, expr := range []string{req, rep} {
+			raw, err := windows.BytePtrFromString(expr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var errStr *byte
+			var errPos uint32
+			ok, _, callErr := compile.Call(uintptr(unsafe.Pointer(raw)), layerNetwork, 0, 0, uintptr(unsafe.Pointer(&errStr)), uintptr(unsafe.Pointer(&errPos)))
+			runtime.KeepAlive(raw)
+			if ok == 0 {
+				errMsg := ""
+				if errStr != nil {
+					errMsg = windows.BytePtrToString(errStr)
+				}
+				t.Fatalf("%s filter compile failed at token %d (%s / %v): %s", tc.name, errPos, errMsg, callErr, expr)
+			}
+		}
 	}
 }

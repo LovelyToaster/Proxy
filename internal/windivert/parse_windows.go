@@ -5,7 +5,7 @@ import (
 	"unsafe"
 )
 
-// WinDivert owns extension-header discovery. Go checks the resulting transport bounds.
+// WinDivert owns extension-header discovery. Go handles standard non-extended packets directly.
 func (l *library) parseTransportPacket(data []byte) (packet, error) {
 	n, err := parseNetwork(data)
 	if err != nil {
@@ -13,6 +13,10 @@ func (l *library) parseTransportPacket(data []byte) (packet, error) {
 	}
 	if n.source.Is4() && n.data[6]&0x3f != 0 || n.source.Is4() && n.data[7] != 0 || n.protocol == 44 {
 		return packet{}, errFragment
+	}
+	// Fast path: standard IPv4 or IPv6 without extension headers directly carrying TCP/UDP.
+	if (n.protocol == 6 || n.protocol == 17) && (n.source.Is4() || n.offset == 40) {
+		return parseTransport(n)
 	}
 	var tcp, udp uintptr
 	protocol := n.protocol
