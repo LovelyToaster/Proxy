@@ -206,11 +206,11 @@ function formatDuration(str) {
     } else {
       tableBody.innerHTML = conns.map(c => `
         <tr>
-          <td>${c.id}</td>
-          <td>${escapeHtml(c.source)}</td>
-          <td>${escapeHtml(c.destination)}</td>
-          <td>${escapeHtml(c.outbound)}</td>
-          <td style="text-align: right; color: var(--text-muted);">${escapeHtml(formatDuration(c.duration))}</td>
+          <td class="col-id">${c.id}</td>
+          <td class="col-addr" title="${escapeHtml(c.source)}"><span class="cell-text">${escapeHtml(c.source)}</span></td>
+          <td class="col-addr" title="${escapeHtml(c.destination)}"><span class="cell-text">${escapeHtml(c.destination)}</span></td>
+          <td class="col-outbound"><span style="color: var(--primary); font-weight: 500;">${escapeHtml(c.outbound)}</span></td>
+          <td class="col-duration">${escapeHtml(formatDuration(c.duration))}</td>
         </tr>
       `).join('');
     }

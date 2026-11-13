@@ -414,13 +414,14 @@ body {
   transition: width 0.3s ease;
 }
 
-/* 活跃连接内部滚动容器 */
+/* 活跃连接内部滚动容器与表格安全排版 */
 .table-scroll-container {
   flex: 1;
   overflow-y: auto;
   overflow-x: auto;
   border: 1px solid var(--border);
   border-radius: 6px;
+  background-color: var(--bg-card);
 }
 
 .table-scroll-container thead th {
@@ -430,26 +431,66 @@ body {
   z-index: 5;
 }
 
-/* 表格 */
+/* 表格：固定表格布局 + 最小宽度保护 + 禁止非预期折行 */
 .data-table {
   width: 100%;
+  min-width: 540px;
+  table-layout: fixed;
   border-collapse: collapse;
-  font-size: 14px;
+  font-size: 13.5px;
   text-align: left;
 }
 
+.data-table th,
+.data-table td {
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
 .data-table th {
-  padding: 10px 12px;
   font-weight: 600;
   color: var(--text-muted);
-  border-bottom: 1px solid var(--border);
 }
 
 .data-table td {
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 14px;
+}
+
+/* 编号列：紧凑锁定 */
+.col-id {
+  width: 52px;
+  text-align: left;
+}
+
+/* 出站策略列：紧凑锁定 */
+.col-outbound {
+  width: 72px;
+  text-align: left;
+}
+
+/* 持续时间列：紧凑锁定，靠右对齐，绝不换行 */
+.col-duration {
+  width: 88px;
+  text-align: right;
+  color: var(--text-muted);
+}
+
+/* 地址列（IPv4 与 IPv6 通用）：自适应弹性伸缩 + 超长截断省略号 + 原生悬停气泡 */
+.col-addr {
+  width: calc((100% - 212px) / 2);
+  min-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.col-addr .cell-text {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
 }
 
 /* 饼图容器与图例 */
