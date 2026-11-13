@@ -25,11 +25,12 @@ type arcEntry struct {
 }
 
 type arcCache struct {
-	mu    sync.Mutex
-	c     int          // maximum capacity
-	p     float64      // adaptive target size of T1
-	bytes int          // total cached bytes in memory (T1 + T2)
-	stale staleOptions
+	mu          sync.Mutex
+	c           int     // maximum capacity
+	p           float64 // adaptive target size of T1
+	bytes       int     // total cached bytes in memory (T1 + T2)
+	negativeTTL uint32
+	stale       staleOptions
 
 	t1 list.List
 	t2 list.List
@@ -101,25 +102,13 @@ func (c *arcCache) get(key cacheKey, query *dns.Msg, now time.Time) (*dns.Msg, e
 	return msg, state
 }
 
-func (c *arcCache) put(key cacheKey, response *dns.Msg, now time.Time) {
-	size := response.Len()
-	if size > 16384 || c.c <= 0 {
-		return
+func (c *arcCache) put(key cacheKey, response *dns.Msg, now time.Time) putRejectReason {
+	if c.c <= 0 {
+		return rejectUncacheable
 	}
-	ttl := cacheTTL(response, key.question.Qtype)
-	if ttl == 0 {
-		return
-	}
-	copyMsg := response.Copy()
-	if response.Rcode == dns.RcodeNameError || !hasAnswerType(response, key.question.Qtype) {
-		eachRR(copyMsg, func(rr dns.RR) { rr.Header().Ttl = min(ttl, rr.Header().Ttl) })
-	}
-	val := &cacheValue{
-		key:      key,
-		response: copyMsg,
-		stored:   now,
-		ttl:      ttl,
-		size:     size,
+	val, reason := prepareCacheValue(key, response, now, c.negativeTTL)
+	if val == nil {
+		return reason
 	}
 
 	c.mu.Lock()
@@ -144,7 +133,7 @@ func (c *arcCache) put(key cacheKey, response *dns.Msg, now time.Time) {
 				c.t2.MoveToFront(elem)
 			}
 			c.enforceByteLimit()
-			return
+			return rejectNone
 
 		case locB1:
 			// Case 2: Ghost hit in B1
@@ -163,7 +152,7 @@ func (c *arcCache) put(key cacheKey, response *dns.Msg, now time.Time) {
 			c.items[key] = c.t2.PushFront(entry)
 			c.bytes += val.size
 			c.enforceByteLimit()
-			return
+			return rejectNone
 
 		case locB2:
 			// Case 3: Ghost hit in B2
@@ -182,7 +171,7 @@ func (c *arcCache) put(key cacheKey, response *dns.Msg, now time.Time) {
 			c.items[key] = c.t2.PushFront(entry)
 			c.bytes += val.size
 			c.enforceByteLimit()
-			return
+			return rejectNone
 		}
 	}
 
@@ -213,6 +202,7 @@ func (c *arcCache) put(key cacheKey, response *dns.Msg, now time.Time) {
 	c.items[key] = c.t1.PushFront(entry)
 	c.bytes += val.size
 	c.enforceByteLimit()
+	return rejectNone
 }
 
 func (c *arcCache) replace(inB2 bool, p float64) {

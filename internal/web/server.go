@@ -26,18 +26,22 @@ type ActiveConn struct {
 
 // DNSOverview represents DNS resolution statistics.
 type DNSOverview struct {
-	Enabled          bool              `json:"enabled"`
-	Queries          uint64            `json:"queries"`
-	CacheHits        uint64            `json:"cache_hits"`
-	StaleHits        uint64            `json:"stale_hits"`
-	FreshHits        uint64            `json:"fresh_hits"`
-	Failures         uint64            `json:"failures"`
-	Fallbacks        uint64            `json:"fallbacks"`
-	OtherQueries     uint64            `json:"other_queries"`
-	Cached           int               `json:"cached"`
-	MaxEntries       int               `json:"max_entries"`
-	HitRate          string            `json:"hit_rate"`
-	UpstreamRequests map[string]uint64 `json:"upstream_requests,omitempty"`
+	Enabled              bool              `json:"enabled"`
+	Queries              uint64            `json:"queries"`
+	CacheHits            uint64            `json:"cache_hits"`
+	StaleHits            uint64            `json:"stale_hits"`
+	FreshHits            uint64            `json:"fresh_hits"`
+	UncacheableQueries   uint64            `json:"uncacheable_queries"`
+	UncacheableResponses uint64            `json:"uncacheable_responses"`
+	NegativeNoSOA        uint64            `json:"negative_no_soa"`
+	SystemBypass         uint64            `json:"system_bypass"`
+	Failures             uint64            `json:"failures"`
+	Fallbacks            uint64            `json:"fallbacks"`
+	OtherQueries         uint64            `json:"other_queries"`
+	Cached               int               `json:"cached"`
+	MaxEntries           int               `json:"max_entries"`
+	HitRate              string            `json:"hit_rate"`
+	UpstreamRequests     map[string]uint64 `json:"upstream_requests,omitempty"`
 }
 
 // OverviewData aggregates the dashboard status metrics.

@@ -1,6 +1,7 @@
 package dnsengine
 
 import (
+	"fmt"
 	"math"
 	"time"
 
@@ -17,10 +18,22 @@ const (
 	entryStale
 )
 
+type putRejectReason uint8
+
+const (
+	rejectNone putRejectReason = iota
+	rejectUncacheable
+	rejectNoSOA
+)
+
 type cacheKey struct {
 	policy   string
 	question dns.Question
 	flags    uint8
+}
+
+func (k cacheKey) string() string {
+	return fmt.Sprintf("%s:%s:%d:%d", k.policy, k.question.Name, k.question.Qtype, k.flags)
 }
 
 type cacheValue struct {
@@ -38,14 +51,15 @@ type staleOptions struct {
 }
 
 type cacheOptions struct {
-	algorithm  string
-	maxEntries int
-	stale      staleOptions
+	algorithm   string
+	maxEntries  int
+	negativeTTL uint32
+	stale       staleOptions
 }
 
 type dnsCache interface {
 	get(key cacheKey, query *dns.Msg, now time.Time) (*dns.Msg, entryState)
-	put(key cacheKey, response *dns.Msg, now time.Time)
+	put(key cacheKey, response *dns.Msg, now time.Time) putRejectReason
 	clear()
 	size() int
 	capacity() int
@@ -67,9 +81,13 @@ func newCacheWithOptions(opts cacheOptions) dnsCache {
 	}
 	switch algo {
 	case "lru":
-		return newLRUCache(opts.maxEntries, opts.stale)
+		c := newLRUCache(opts.maxEntries, opts.stale)
+		c.negativeTTL = opts.negativeTTL
+		return c
 	default:
-		return newARCCache(opts.maxEntries, opts.stale)
+		c := newARCCache(opts.maxEntries, opts.stale)
+		c.negativeTTL = opts.negativeTTL
+		return c
 	}
 }
 
@@ -99,9 +117,19 @@ func (v *cacheValue) evaluate(query *dns.Msg, now time.Time, stale staleOptions)
 	return nil, entryMiss
 }
 
+func hasClientSpecificEDNS(opt *dns.OPT) bool {
+	for _, o := range opt.Option {
+		if _, ok := o.(*dns.EDNS0_SUBNET); ok {
+			return true
+		}
+	}
+	return false
+}
+
 func makeKey(policy string, query *dns.Msg) (cacheKey, bool) {
-	// Other flags and sections can affect the response. Treat options such as ECS
-	// and cookies as uncacheable, while separating DO and EDNS presence.
+	// Other flags and sections can affect the response. Treat client-specific
+	// options such as ECS as uncacheable, while ignoring stateless EDNS0 options
+	// (e.g. Padding, Cookie, Keepalive) and sharing non-DO queries.
 	if len(query.Answer) != 0 || len(query.Ns) != 0 || len(query.Extra) > 1 {
 		return cacheKey{}, false
 	}
@@ -117,10 +145,9 @@ func makeKey(policy string, query *dns.Msg) (cacheKey, bool) {
 	}
 	if len(query.Extra) == 1 {
 		opt, ok := query.Extra[0].(*dns.OPT)
-		if !ok || opt.Version() != 0 || len(opt.Option) != 0 || opt.Z() != 0 {
+		if !ok || opt.Version() != 0 || opt.Z() != 0 || hasClientSpecificEDNS(opt) {
 			return cacheKey{}, false
 		}
-		flags |= 8
 		if opt.Do() {
 			flags |= 16
 		}
@@ -130,17 +157,17 @@ func makeKey(policy string, query *dns.Msg) (cacheKey, bool) {
 	return cacheKey{policy, question, flags}, true
 }
 
-func cacheTTL(response *dns.Msg, qtype uint16) uint32 {
+func cacheTTL(response *dns.Msg, qtype uint16, negativeTTL uint32) (uint32, putRejectReason) {
 	if response.Truncated || (response.Rcode != dns.RcodeSuccess && response.Rcode != dns.RcodeNameError) {
-		return 0
+		return 0, rejectUncacheable
 	}
-	// Cached responses must not carry per-client EDNS data or transaction authentication.
+	// Cached responses must not carry client-specific EDNS data or transaction authentication.
 	for _, rr := range response.Extra {
-		if opt, ok := rr.(*dns.OPT); ok && len(opt.Option) != 0 {
-			return 0
+		if opt, ok := rr.(*dns.OPT); ok && hasClientSpecificEDNS(opt) {
+			return 0, rejectUncacheable
 		}
 		if rr.Header().Rrtype == dns.TypeTSIG || rr.Header().Rrtype == dns.TypeSIG {
-			return 0
+			return 0, rejectUncacheable
 		}
 	}
 	ttl := uint32(86400)
@@ -153,12 +180,49 @@ func cacheTTL(response *dns.Msg, qtype uint16) uint32 {
 			}
 		}
 		if negative == 0 {
-			return 0
+			if negativeTTL == 0 {
+				return 0, rejectNoSOA
+			}
+			negative = negativeTTL
 		}
 		ttl = min(ttl, negative)
 	}
 	eachRR(response, func(rr dns.RR) { ttl = min(ttl, rr.Header().Ttl) })
-	return ttl
+	if ttl == 0 {
+		return 0, rejectUncacheable
+	}
+	return ttl, rejectNone
+}
+
+func prepareCacheValue(key cacheKey, response *dns.Msg, now time.Time, negativeTTL uint32) (*cacheValue, putRejectReason) {
+	size := response.Len()
+	if size > 16384 {
+		return nil, rejectUncacheable
+	}
+	ttl, reason := cacheTTL(response, key.question.Qtype, negativeTTL)
+	if ttl == 0 {
+		return nil, reason
+	}
+	copyMsg := response.Copy()
+	if len(copyMsg.Extra) > 0 {
+		filtered := copyMsg.Extra[:0]
+		for _, rr := range copyMsg.Extra {
+			if rr.Header().Rrtype != dns.TypeOPT {
+				filtered = append(filtered, rr)
+			}
+		}
+		copyMsg.Extra = filtered
+	}
+	if response.Rcode == dns.RcodeNameError || !hasAnswerType(response, key.question.Qtype) {
+		eachRR(copyMsg, func(rr dns.RR) { rr.Header().Ttl = min(ttl, rr.Header().Ttl) })
+	}
+	return &cacheValue{
+		key:      key,
+		response: copyMsg,
+		stored:   now,
+		ttl:      ttl,
+		size:     size,
+	}, rejectNone
 }
 
 func hasAnswerType(response *dns.Msg, qtype uint16) bool {

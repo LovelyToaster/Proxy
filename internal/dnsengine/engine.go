@@ -23,39 +23,48 @@ import (
 )
 
 type Engine struct {
-	infrastructure   *infrastructure
-	policyMu         sync.RWMutex
-	listen           []netip.AddrPort
-	upstreams        map[string]upstream.Upstream
-	bootstrap        []io.Closer
-	rules            []config.DNSRule
-	matchers         map[string]*geosite.Matcher
-	fallback         string
-	cache            dnsCache
-	cachePersist     config.DNSCachePersist
-	persistStop      chan struct{}
-	persistDone      chan struct{}
-	refreshGroup     singleflight.Group
-	workers          chan struct{}
-	queries          atomic.Uint64
-	hits             atomic.Uint64
-	staleHits        atomic.Uint64
-	fallbacks        atomic.Uint64
-	failed           atomic.Uint64
-	packets          sync.WaitGroup
-	upstreamRequests sync.Map
+	infrastructure       *infrastructure
+	policyMu             sync.RWMutex
+	listen               []netip.AddrPort
+	upstreams            map[string]upstream.Upstream
+	bootstrap            []io.Closer
+	rules                []config.DNSRule
+	matchers             map[string]*geosite.Matcher
+	fallback             string
+	cache                dnsCache
+	cachePersist         config.DNSCachePersist
+	persistStop          chan struct{}
+	persistDone          chan struct{}
+	refreshGroup         singleflight.Group
+	missGroup            singleflight.Group
+	workers              chan struct{}
+	queries              atomic.Uint64
+	hits                 atomic.Uint64
+	staleHits            atomic.Uint64
+	uncacheableQueries   atomic.Uint64
+	uncacheableResponses atomic.Uint64
+	negativeNoSOA        atomic.Uint64
+	systemBypass         atomic.Uint64
+	fallbacks            atomic.Uint64
+	failed               atomic.Uint64
+	packets              sync.WaitGroup
+	upstreamRequests     sync.Map
 }
 
 type Status struct {
-	Enabled          bool              `json:"enabled"`
-	Listen           []netip.AddrPort  `json:"listen,omitempty"`
-	Queries          uint64            `json:"queries"`
-	CacheHits        uint64            `json:"cache_hits"`
-	StaleHits        uint64            `json:"stale_hits"`
-	Cached           int               `json:"cached"`
-	Fallbacks        uint64            `json:"fallbacks"`
-	Failures         uint64            `json:"failures"`
-	UpstreamRequests map[string]uint64 `json:"upstream_requests"`
+	Enabled              bool              `json:"enabled"`
+	Listen               []netip.AddrPort  `json:"listen,omitempty"`
+	Queries              uint64            `json:"queries"`
+	CacheHits            uint64            `json:"cache_hits"`
+	StaleHits            uint64            `json:"stale_hits"`
+	UncacheableQueries   uint64            `json:"uncacheable_queries"`
+	UncacheableResponses uint64            `json:"uncacheable_responses"`
+	NegativeNoSOA        uint64            `json:"negative_no_soa"`
+	SystemBypass         uint64            `json:"system_bypass"`
+	Cached               int               `json:"cached"`
+	Fallbacks            uint64            `json:"fallbacks"`
+	Failures             uint64            `json:"failures"`
+	UpstreamRequests     map[string]uint64 `json:"upstream_requests"`
 }
 
 func New(cfg config.DNS, dialer net.Dialer, outboundSets ...map[string]config.Outbound) (*Engine, error) {
@@ -77,8 +86,9 @@ func New(cfg config.DNS, dialer net.Dialer, outboundSets ...map[string]config.Ou
 		entries = cfg.Cache.MaxEntries
 	}
 	cacheOpts := cacheOptions{
-		algorithm:  cfg.Cache.Algorithm,
-		maxEntries: entries,
+		algorithm:   cfg.Cache.Algorithm,
+		maxEntries:  entries,
+		negativeTTL: uint32(cfg.Cache.NegativeTTL.Seconds()),
 		stale: staleOptions{
 			enabled:  cfg.Cache.Enabled && cfg.Cache.Stale.IsEnabled(),
 			staleTTL: cfg.Cache.Stale.StaleTTL,
@@ -177,8 +187,12 @@ func (e *Engine) Status() Status {
 	defer e.policyMu.RUnlock()
 	requests := make(map[string]uint64)
 	e.upstreamRequests.Range(func(key, value any) bool { requests[key.(string)] = value.(*atomic.Uint64).Load(); return true })
-	return Status{Enabled: true, Listen: e.listen, Queries: e.queries.Load(), CacheHits: e.hits.Load(), StaleHits: e.staleHits.Load(), Cached: e.cache.size(),
-		Fallbacks: e.fallbacks.Load(), Failures: e.failed.Load(), UpstreamRequests: requests}
+	return Status{
+		Enabled: true, Listen: e.listen, Queries: e.queries.Load(), CacheHits: e.hits.Load(), StaleHits: e.staleHits.Load(),
+		UncacheableQueries: e.uncacheableQueries.Load(), UncacheableResponses: e.uncacheableResponses.Load(),
+		NegativeNoSOA: e.negativeNoSOA.Load(), SystemBypass: e.systemBypass.Load(),
+		Cached: e.cache.size(), Fallbacks: e.fallbacks.Load(), Failures: e.failed.Load(), UpstreamRequests: requests,
+	}
 }
 
 func (e *Engine) Flush() error {
@@ -263,6 +277,32 @@ func truncate(query, response *dns.Msg) {
 	response.Truncate(size)
 }
 
+type missResult struct {
+	response *dns.Msg
+	err      error
+}
+
+func (e *Engine) recordPutReject(reason putRejectReason) {
+	switch reason {
+	case rejectNoSOA:
+		e.negativeNoSOA.Add(1)
+	case rejectUncacheable:
+		e.uncacheableResponses.Add(1)
+	}
+}
+
+func (e *Engine) exchangeWithFallback(policy string, up upstream.Upstream, fallbackName string, fallUp upstream.Upstream, query *dns.Msg) (*dns.Msg, bool, error) {
+	e.countUpstream(policy)
+	response, err := exchange(up, query)
+	fallback := fallbackName != "" && fallbackName != policy && fallUp != nil && (err != nil || response.Rcode == dns.RcodeServerFailure)
+	if fallback {
+		e.fallbacks.Add(1)
+		e.countUpstream(fallbackName)
+		response, err = exchange(fallUp, query)
+	}
+	return response, fallback, err
+}
+
 func (e *Engine) answer(query *dns.Msg) *dns.Msg {
 	if query.Opcode != dns.OpcodeQuery {
 		return new(dns.Msg).SetRcode(query, dns.RcodeNotImplemented)
@@ -275,14 +315,25 @@ func (e *Engine) answer(query *dns.Msg) *dns.Msg {
 		return new(dns.Msg).SetRcode(query, dns.RcodeRefused)
 	}
 	e.policyMu.RLock()
-	defer e.policyMu.RUnlock()
 	policy := e.policy(question.Name)
-	key, cacheable := makeKey(policy, query)
-	if _, dynamic := e.upstreams[policy].(*systemUpstream); dynamic {
-		cacheable = false
+	up := e.upstreams[policy]
+	fallbackName := e.fallback
+	var fallUp upstream.Upstream
+	if fallbackName != "" && fallbackName != policy {
+		fallUp = e.upstreams[fallbackName]
 	}
-	if cacheable && e.cache.capacity() > 0 {
-		found, state := e.cache.get(key, query, time.Now())
+	cache := e.cache
+	e.policyMu.RUnlock()
+
+	key, cacheable := makeKey(policy, query)
+	if !cacheable {
+		e.uncacheableQueries.Add(1)
+	} else if _, dynamic := up.(*systemUpstream); dynamic {
+		cacheable = false
+		e.systemBypass.Add(1)
+	}
+	if cacheable && cache.capacity() > 0 {
+		found, state := cache.get(key, query, time.Now())
 		if state == entryFresh {
 			e.hits.Add(1)
 			return found
@@ -293,47 +344,52 @@ func (e *Engine) answer(query *dns.Msg) *dns.Msg {
 			e.refreshAsync(policy, key)
 			return found
 		}
-	}
-	e.countUpstream(policy)
-	response, err := exchange(e.upstreams[policy], query)
-	fallback := e.fallback != "" && e.fallback != policy && (err != nil || response.Rcode == dns.RcodeServerFailure)
-	if fallback {
-		e.fallbacks.Add(1)
-		e.countUpstream(e.fallback)
-		response, err = exchange(e.upstreams[e.fallback], query)
-	}
-	if err != nil {
-		e.failed.Add(1)
-		log.Printf("DNS upstream %s: %v", policy, err)
-		if cacheable {
-			if staleMsg, state := e.cache.get(key, query, time.Now()); state == entryStale {
+		v, _, _ := e.missGroup.Do(key.string(), func() (any, error) {
+			response, fallback, err := e.exchangeWithFallback(policy, up, fallbackName, fallUp, query)
+			if err == nil && response.Rcode != dns.RcodeServerFailure && !fallback {
+				e.recordPutReject(cache.put(key, response, time.Now()))
+			}
+			return missResult{response: response, err: err}, nil
+		})
+		res := v.(missResult)
+		if res.err != nil {
+			e.failed.Add(1)
+			log.Printf("DNS upstream %s: %v", policy, res.err)
+			if staleMsg, state := cache.get(key, query, time.Now()); state == entryStale {
+				e.staleHits.Add(1)
+				return staleMsg
+			}
+			return new(dns.Msg).SetRcode(query, dns.RcodeServerFailure)
+		}
+		if res.response.Rcode == dns.RcodeServerFailure {
+			e.failed.Add(1)
+			if staleMsg, state := cache.get(key, query, time.Now()); state == entryStale {
 				e.staleHits.Add(1)
 				return staleMsg
 			}
 		}
+		out := res.response.Copy()
+		out.Id = query.Id
+		out.Question = append(out.Question[:0], query.Question...)
+		return out
+	}
+
+	response, _, err := e.exchangeWithFallback(policy, up, fallbackName, fallUp, query)
+	if err != nil {
+		e.failed.Add(1)
+		log.Printf("DNS upstream %s: %v", policy, err)
 		return new(dns.Msg).SetRcode(query, dns.RcodeServerFailure)
 	}
 	if response.Rcode == dns.RcodeServerFailure {
 		e.failed.Add(1)
-		if cacheable {
-			if staleMsg, state := e.cache.get(key, query, time.Now()); state == entryStale {
-				e.staleHits.Add(1)
-				return staleMsg
-			}
-		}
 	}
 	response.Id = query.Id
 	response.Question = append(response.Question[:0], query.Question...)
-	// A temporary fallback must not mask recovery of the primary resolver.
-	if cacheable && !fallback {
-		e.cache.put(key, response, time.Now())
-	}
 	return response
 }
 
 func (e *Engine) refreshAsync(policy string, key cacheKey) {
-	keyStr := fmt.Sprintf("%s:%s:%d:%d", key.policy, key.question.Name, key.question.Qtype, key.flags)
-	e.refreshGroup.DoChan(keyStr, func() (any, error) {
+	e.refreshGroup.DoChan(key.string(), func() (any, error) {
 		req := new(dns.Msg)
 		req.Id = dns.Id()
 		req.SetQuestion(key.question.Name, key.question.Qtype)
@@ -341,11 +397,11 @@ func (e *Engine) refreshAsync(policy string, key cacheKey) {
 		req.RecursionDesired = (key.flags & 1) != 0
 		req.CheckingDisabled = (key.flags & 2) != 0
 		req.AuthenticatedData = (key.flags & 4) != 0
-		if (key.flags & 8) != 0 {
+		if (key.flags & 16) != 0 {
 			opt := new(dns.OPT)
 			opt.Hdr.Name = "."
 			opt.Hdr.Rrtype = dns.TypeOPT
-			opt.SetDo((key.flags & 16) != 0)
+			opt.SetDo(true)
 			req.Extra = []dns.RR{opt}
 		}
 

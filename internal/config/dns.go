@@ -23,11 +23,12 @@ type DNS struct {
 }
 
 type DNSCache struct {
-	Enabled    bool            `yaml:"enabled"`
-	MaxEntries int             `yaml:"max_entries"`
-	Algorithm  string          `yaml:"algorithm"`
-	Stale      DNSCacheStale   `yaml:"stale"`
-	Persist    DNSCachePersist `yaml:"persist"`
+	Enabled     bool            `yaml:"enabled"`
+	MaxEntries  int             `yaml:"max_entries"`
+	Algorithm   string          `yaml:"algorithm"`
+	NegativeTTL time.Duration   `yaml:"negative_ttl"`
+	Stale       DNSCacheStale   `yaml:"stale"`
+	Persist     DNSCachePersist `yaml:"persist"`
 }
 
 type DNSCacheStale struct {
@@ -129,6 +130,9 @@ func (c DNS) validate(capture Capture, listeners []Listener) error {
 	}
 	if c.Cache.Algorithm != "" && c.Cache.Algorithm != "arc" && c.Cache.Algorithm != "lru" {
 		return errors.New("dns.cache.algorithm must be 'arc' or 'lru'")
+	}
+	if c.Cache.NegativeTTL < 0 || c.Cache.NegativeTTL > time.Hour {
+		return errors.New("dns.cache.negative_ttl out of range")
 	}
 	if c.Cache.Stale.StaleTTL < 0 || c.Cache.Stale.StaleTTL > 24*time.Hour {
 		return errors.New("dns.cache.stale.stale_ttl out of range")

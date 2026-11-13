@@ -112,21 +112,22 @@ func TestDNSCacheConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DNS.Cache.Algorithm != "arc" || !cfg.DNS.Cache.Stale.IsEnabled() || cfg.DNS.Cache.Stale.StaleTTL != 24*time.Hour || cfg.DNS.Cache.Stale.ServeTTL != 5*time.Second || !cfg.DNS.Cache.Persist.IsEnabled() || cfg.DNS.Cache.Persist.SyncInterval != time.Hour {
+	if cfg.DNS.Cache.Algorithm != "arc" || cfg.DNS.Cache.NegativeTTL != 60*time.Second || !cfg.DNS.Cache.Stale.IsEnabled() || cfg.DNS.Cache.Stale.StaleTTL != 24*time.Hour || cfg.DNS.Cache.Stale.ServeTTL != 5*time.Second || !cfg.DNS.Cache.Persist.IsEnabled() || cfg.DNS.Cache.Persist.SyncInterval != time.Hour {
 		t.Fatalf("unexpected cache defaults: %+v", cfg.DNS.Cache)
 	}
 
-	valid := strings.Replace(minimalDNS, "dns:\n", "dns:\n  cache:\n    enabled: true\n    max_entries: 512\n    algorithm: lru\n    stale:\n      enabled: false\n      stale_ttl: 15m\n      serve_ttl: 3s\n    persist:\n      enabled: false\n      file: custom/cache.bin\n      sync_interval: 5m\n", 1)
+	valid := strings.Replace(minimalDNS, "dns:\n", "dns:\n  cache:\n    enabled: true\n    max_entries: 512\n    algorithm: lru\n    negative_ttl: 0s\n    stale:\n      enabled: false\n      stale_ttl: 15m\n      serve_ttl: 3s\n    persist:\n      enabled: false\n      file: custom/cache.bin\n      sync_interval: 5m\n", 1)
 	cfg, _, err = loadText(t, valid)
 	if err != nil {
 		t.Fatalf("valid custom cache config failed: %v", err)
 	}
-	if cfg.DNS.Cache.Algorithm != "lru" || cfg.DNS.Cache.Stale.IsEnabled() || cfg.DNS.Cache.Stale.StaleTTL != 15*time.Minute || cfg.DNS.Cache.Stale.ServeTTL != 3*time.Second || cfg.DNS.Cache.Persist.IsEnabled() || cfg.DNS.Cache.Persist.SyncInterval != 5*time.Minute {
+	if cfg.DNS.Cache.Algorithm != "lru" || cfg.DNS.Cache.NegativeTTL != 0 || cfg.DNS.Cache.Stale.IsEnabled() || cfg.DNS.Cache.Stale.StaleTTL != 15*time.Minute || cfg.DNS.Cache.Stale.ServeTTL != 3*time.Second || cfg.DNS.Cache.Persist.IsEnabled() || cfg.DNS.Cache.Persist.SyncInterval != 5*time.Minute {
 		t.Fatalf("unexpected custom cache: %+v", cfg.DNS.Cache)
 	}
 
 	for _, invalid := range []string{
 		"algorithm: random",
+		"negative_ttl: 2h",
 		"stale:\n      stale_ttl: 48h",
 		"stale:\n      serve_ttl: 2m",
 		"persist:\n      sync_interval: 48h",

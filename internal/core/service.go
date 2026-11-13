@@ -607,6 +607,10 @@ func (s *state) Overview() (web.OverviewData, error) {
 		}
 		dnsOverview.Failures = dnsStat.Failures
 		dnsOverview.Fallbacks = dnsStat.Fallbacks
+		dnsOverview.UncacheableQueries = dnsStat.UncacheableQueries
+		dnsOverview.UncacheableResponses = dnsStat.UncacheableResponses
+		dnsOverview.NegativeNoSOA = dnsStat.NegativeNoSOA
+		dnsOverview.SystemBypass = dnsStat.SystemBypass
 		dnsOverview.Cached = dnsStat.Cached
 		dnsOverview.MaxEntries = s.cfg.DNS.Cache.MaxEntries
 		if dnsOverview.MaxEntries == 0 {

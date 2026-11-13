@@ -10,12 +10,13 @@ import (
 )
 
 type lruCache struct {
-	mu    sync.Mutex
-	max   int
-	bytes int
-	stale staleOptions
-	items map[cacheKey]*list.Element
-	lru   list.List
+	mu          sync.Mutex
+	max         int
+	bytes       int
+	negativeTTL uint32
+	stale       staleOptions
+	items       map[cacheKey]*list.Element
+	lru         list.List
 }
 
 func newLRUCache(maximum int, stale staleOptions) *lruCache {
@@ -61,20 +62,15 @@ func (c *lruCache) get(key cacheKey, query *dns.Msg, now time.Time) (*dns.Msg, e
 	return msg, state
 }
 
-func (c *lruCache) put(key cacheKey, response *dns.Msg, now time.Time) {
-	size := response.Len()
-	if size > 16384 || c.max <= 0 {
-		return
+func (c *lruCache) put(key cacheKey, response *dns.Msg, now time.Time) putRejectReason {
+	if c.max <= 0 {
+		return rejectUncacheable
 	}
-	ttl := cacheTTL(response, key.question.Qtype)
-	if ttl == 0 {
-		return
+	value, reason := prepareCacheValue(key, response, now, c.negativeTTL)
+	if value == nil {
+		return reason
 	}
-	copyMsg := response.Copy()
-	if response.Rcode == dns.RcodeNameError || !hasAnswerType(response, key.question.Qtype) {
-		eachRR(copyMsg, func(rr dns.RR) { rr.Header().Ttl = min(ttl, rr.Header().Ttl) })
-	}
-	value := &cacheValue{key, copyMsg, now, ttl, size}
+	size := value.size
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if previous := c.items[key]; previous != nil {
@@ -85,6 +81,7 @@ func (c *lruCache) put(key cacheKey, response *dns.Msg, now time.Time) {
 	for len(c.items) > c.max || c.bytes > cacheByteLimit {
 		c.remove(c.lru.Back())
 	}
+	return rejectNone
 }
 
 func (c *lruCache) remove(item *list.Element) {
