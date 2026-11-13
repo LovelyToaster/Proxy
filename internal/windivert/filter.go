@@ -13,6 +13,11 @@ func captureFilter(c config.Capture) string {
 	return fmt.Sprintf("(%s) or (%s)", rep, req)
 }
 
+const (
+	globalPublicIPv4 = "((ip.DstAddr >= 0.0.0.1 and ip.DstAddr <= 9.255.255.255) or (ip.DstAddr >= 11.0.0.0 and ip.DstAddr <= 126.255.255.255) or (ip.DstAddr >= 128.0.0.0 and ip.DstAddr <= 169.253.255.255) or (ip.DstAddr >= 169.255.0.0 and ip.DstAddr <= 172.15.255.255) or (ip.DstAddr >= 172.32.0.0 and ip.DstAddr <= 192.167.255.255) or (ip.DstAddr >= 192.169.0.0 and ip.DstAddr <= 223.255.255.255))"
+	globalPublicIPv6 = "((ipv6.DstAddr >= ::2 and ipv6.DstAddr <= fbff:ffff:ffff:ffff:ffff:ffff:ffff:ffff) or (ipv6.DstAddr >= fe00:: and ipv6.DstAddr <= fe7f:ffff:ffff:ffff:ffff:ffff:ffff:ffff) or (ipv6.DstAddr >= fec0:: and ipv6.DstAddr <= feff:ffff:ffff:ffff:ffff:ffff:ffff:ffff))"
+)
+
 func splitCaptureFilters(c config.Capture) (string, string) {
 	var targets []string
 	for _, prefix := range c.CIDRs {
@@ -28,11 +33,28 @@ func splitCaptureFilters(c config.Capture) (string, string) {
 		targets = append(targets, fmt.Sprintf("(%s >= %s and %s <= %s)", field, prefix.Addr(), field, end))
 	}
 	if len(targets) == 0 {
-		if c.IPv4 {
-			targets = append(targets, "ip")
-		}
-		if c.IPv6 {
-			targets = append(targets, "ipv6")
+		if c.Scope == "global" {
+			if c.IPv4 {
+				if c.DNSHijack {
+					targets = append(targets, "(ip and (tcp.DstPort == 53 or udp.DstPort == 53 or "+globalPublicIPv4+"))")
+				} else {
+					targets = append(targets, "(ip and "+globalPublicIPv4+")")
+				}
+			}
+			if c.IPv6 {
+				if c.DNSHijack {
+					targets = append(targets, "(ipv6 and (tcp.DstPort == 53 or udp.DstPort == 53 or "+globalPublicIPv6+"))")
+				} else {
+					targets = append(targets, "(ipv6 and "+globalPublicIPv6+")")
+				}
+			}
+		} else {
+			if c.IPv4 {
+				targets = append(targets, "ip")
+			}
+			if c.IPv6 {
+				targets = append(targets, "ipv6")
+			}
 		}
 	}
 	var tcpPorts, udpPorts []string

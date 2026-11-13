@@ -76,3 +76,40 @@ func TestLimitedTCPUsesTProxy(t *testing.T) {
 		t.Fatal("limited scope expanded")
 	}
 }
+
+func TestGlobalLinuxBypassesPrivateLANAndPreservesLocalDNS(t *testing.T) {
+	c := config.Capture{Mode: "local", Scope: "global", IPv4: true, IPv6: true, Port: 15080, UDP: true}
+	rules := nftRules("test", c)
+	for _, want := range []string{
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+		"fc00::/7",
+	} {
+		if !strings.Contains(rules, want) {
+			t.Fatalf("missing private LAN exclusion %q:\n%s", want, rules)
+		}
+	}
+	for _, lan := range []string{"192.168.1.10:445", "10.0.0.5:80", "172.16.0.10:443", "[fd00::1]:445", "[fc00::1]:80", "192.168.1.1:53", "[fe80::1]:53", "[fd00::1]:53"} {
+		if scopeAllows(c, netip.MustParseAddrPort(lan), "tcp") || scopeAllows(c, netip.MustParseAddrPort(lan), "udp") {
+			t.Fatalf("LAN/local target %s captured without DNSHijack", lan)
+		}
+	}
+
+	c.DNSHijack = true
+	rules = nftRules("test", c)
+	if !strings.Contains(rules, "192.168.0.0/16 } tcp dport != 53 return") ||
+		!strings.Contains(rules, "::1/128, fe80::/10, fc00::/7 } udp dport != 53 return") {
+		t.Fatalf("missing port-53 exemption for local/LAN DNS:\n%s", rules)
+	}
+	for _, dns := range []string{"192.168.1.1:53", "127.0.0.53:53", "[fe80::1]:53", "[fd00::1]:53"} {
+		if !scopeAllows(c, netip.MustParseAddrPort(dns), "udp") || !scopeAllows(c, netip.MustParseAddrPort(dns), "tcp") {
+			t.Fatalf("local/LAN DNS %s blocked from DNSHijack", dns)
+		}
+	}
+	for _, nonDNS := range []string{"192.168.1.1:445", "127.0.0.1:8080", "[fe80::1]:80", "[fd00::1]:445"} {
+		if scopeAllows(c, netip.MustParseAddrPort(nonDNS), "tcp") {
+			t.Fatalf("non-DNS local target %s captured when DNSHijack enabled", nonDNS)
+		}
+	}
+}

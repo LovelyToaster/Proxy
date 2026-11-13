@@ -108,6 +108,12 @@ func scopeAllows(c config.Capture, target netip.AddrPort, network string) bool {
 	}
 	address := target.Addr().Unmap().WithZone("")
 	if c.Scope == "global" && len(c.CIDRs) == 0 {
+		if address.IsUnspecified() || address.IsMulticast() || address == netip.MustParseAddr("255.255.255.255") {
+			return false
+		}
+		if target.Port() != 53 && (address.IsPrivate() || address.IsLoopback() || address.IsLinkLocalUnicast()) {
+			return false
+		}
 		return address.Is4() && c.IPv4 || address.Is6() && c.IPv6
 	}
 	for _, prefix := range c.CIDRs {
@@ -397,8 +403,23 @@ func writeExclusions(rules *strings.Builder, c config.Capture) {
 		fmt.Fprintf(rules, "meta skuid %d return\n", os.Geteuid())
 	}
 	fmt.Fprintf(rules, "meta mark & 0x%x != 0 return\n", bypassMark)
-	rules.WriteString("ip daddr { 0.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255 } return\n")
-	rules.WriteString("ip6 daddr { ::/128, ::1/128, fe80::/10, ff00::/8 } return\n")
+	rules.WriteString("ip daddr { 0.0.0.0/8, 224.0.0.0/4, 255.255.255.255 } return\n")
+	rules.WriteString("ip6 daddr { ::/128, ff00::/8 } return\n")
+	localV4 := "127.0.0.0/8, 169.254.0.0/16"
+	localV6 := "::1/128, fe80::/10"
+	if c.Scope == "global" && len(c.CIDRs) == 0 {
+		localV4 += ", 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16"
+		localV6 += ", fc00::/7"
+	}
+	if !c.DNSHijack {
+		fmt.Fprintf(rules, "ip daddr { %s } return\n", localV4)
+		fmt.Fprintf(rules, "ip6 daddr { %s } return\n", localV6)
+		return
+	}
+	for _, proto := range []string{"tcp", "udp"} {
+		fmt.Fprintf(rules, "ip daddr { %s } %s dport != 53 return\n", localV4, proto)
+		fmt.Fprintf(rules, "ip6 daddr { %s } %s dport != 53 return\n", localV6, proto)
+	}
 }
 
 func writeTProxy(rules *strings.Builder, c config.Capture, network, iface string) {
