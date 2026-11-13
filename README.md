@@ -23,6 +23,7 @@ Proxy 是用于 Linux 与 Windows 的透明代理与网络转发工具，支持 
   - [状态与监控](#状态与监控)
   - [DNS 与 Geo 数据库](#dns-与-geo-数据库)
   - [接管状态与抓包](#接管状态与抓包)
+  - [Web 控制台](#web-控制台)
 - [系统服务](#系统服务)
   - [Linux（systemd）](#linuxsystemd)
   - [Windows（SCM）](#windowsscm)
@@ -33,11 +34,11 @@ Proxy 是用于 Linux 与 Windows 的透明代理与网络转发工具，支持 
 
 ## 特性
 
-- 流量接管：支持 TCP 与 UDP 双栈捕获（可指定 CIDR 和端口范围），支持 53 端口 DNS 劫持。提供全局模式（`scope: global`）、网关模式（`scope: gateway`）与 Windows 单应用模式（`scope: application`）。
+- 流量接管：支持 TCP 与 UDP 双栈捕获（可指定 CIDR 和端口范围），支持 53 端口 DNS 劫持。提供全局模式（`scope: global`）、网关模式（`scope: gateway`）与 Windows 单应用模式（`scope: application`），全局模式下 Windows 与 Linux 统一旁路内网/保留地址（含 IPv6 ULA）并豁免非目标 53 端口流量。
 - 本地上游防回环：Linux 通过 cgroup v2 与 `ss --cgroup` 识别本地 SOCKS5/HTTP 上游服务或 Docker 容器并豁免其出站；Windows 根据监听端点 PID 过滤放行，支持 `exclude_applications` 进程路径白名单。
-- DNS 引擎：支持 `udp`、`tcp`、`doh`、`doh3`、`dot`、`doq` 与 `system` 上游。支持 `domain`、`domain_suffix` 与 `geosite` 规则分流。包含配置期与运行期依赖循环检测，内置内存缓存。
+- DNS 引擎：支持 `udp`、`tcp`、`doh`、`doh3`、`dot`、`doq` 与 `system` 上游。支持 `domain`、`domain_suffix` 与 `geosite` 规则分流。包含配置期与运行期依赖循环检测；内置 ARC/LRU 缓存、Serve-Stale 过期可用、冷未命中 SingleFlight 并发合并、`negative_ttl` 负缓存兜底、`system` 上游签名隔离缓存及本地持久化。
 - 出站与路由：出站支持 `direct`、`socks5`（含 UDP ASSOCIATE）与 `http`。路由规则支持按 `cidr`、`geoip`、`port` 与 `network` 匹配。
-- 运维与状态：支持配置热重载（`proxy reload`），进程退出时自动清理路由与防火墙规则，内置内存日志缓冲区（`proxy logs -f`）。
+- 运维与状态：支持配置热重载（`proxy reload`），进程退出时自动清理路由与防火墙规则，内置内存日志缓冲区（`proxy logs -f`）与可选 Web 控制台（`web.enabled`）。
 
 ## 工作原理
 
@@ -45,7 +46,7 @@ Proxy 是用于 Linux 与 Windows 的透明代理与网络转发工具，支持 
 
 - 接管链路：
   - 本机出站（OUTPUT）：本地出站流量通过 nftables 打上 `fwmark`，策略路由（路由表 100，优先级 11000）将流量重定向至回环接口 `lo`。
-  - 预路由入站（PREROUTING）：`lo` 或指定入口网卡（网关模式）上的带标流量通过内核 TPROXY 模块分发给本地接管端口（默认 `15080`），保留原始源地址与目的地址。
+  - 预路由入站（PREROUTING）：`lo` 或指定入口网卡（网关模式）上的带标流量通过内核 TPROXY 模块分发给本地接管端口（默认 `15080`），保留原始源地址与目的地址，并支持 TCP `splice` 零拷贝与 UDP 回复套接字复用。
 - 上游防回环：
   - 本机全局模式以专用非 root 用户 `proxyd` 运行，代理进程自身的 UID 流量直接跳过。
   - 守护进程每 500ms 检查本地 SOCKS5/HTTP 上游所属的 cgroup v2。上游属于独立 systemd 服务或 Docker 容器时，在 OUTPUT 链打标前予以豁免，避免代理与上游之间的转发死锁。
@@ -53,7 +54,7 @@ Proxy 是用于 Linux 与 Windows 的透明代理与网络转发工具，支持 
 
 ### Windows 透明接管（WinDivert）
 
-- 报文拦截：使用 WinDivert 驱动（依赖程序目录下的 `WinDivert.dll` 与 `WinDivert64.sys`），在 NETWORK 层捕获并重定向 IPv4/IPv6 报文，处理后注入系统网络栈。
+- 报文拦截：使用 WinDivert 驱动（依赖程序目录下的 `WinDivert.dll` 与 `WinDivert64.sys`），拆分收发句柄并在 NETWORK 层捕获重定向 IPv4/IPv6 报文，还原真实客户端源地址后注入系统网络栈。
 - 分片重组：重组 IPv4/IPv6 分片报文，缓冲区上限 256 组、8 MiB，超时时间 15 秒。
 - 系统 DNS 出口选择：查询 `type: system` 上游时，根据默认路由 metric 与接口 metric 之和选择对应出口网卡的 DNS 服务器，忽略 `fec0` 占位地址。
 
@@ -78,6 +79,7 @@ Proxy 是用于 Linux 与 Windows 的透明代理与网络转发工具，支持 
 
 - 依赖循环检测：SOCKS5/HTTP 节点域名、更新下载域名及未配置 bootstrap 的 DoH 域名均由 `dns.rules` 解析。若检测到 DNS 上游与出站代理之间存在循环依赖，加载配置时报错 `DNS dependency cycle`。
 - DNS 劫持：配置 `dns.hijack: true` 且 `dns.enabled: true` 时，接管 53 端口请求并转入内置 DNS 引擎处理。
+- DNS 缓存机制：默认启用 `arc` 算法与 Serve-Stale（宽限期 `24h`、返回保护 TTL `5s`，后台 SingleFlight 异步刷新），并每 `1h` 持久化至 `data/dns_cache.dat`；对无状态 EDNS0 选项（Padding/Cookie 等）及无 SOA 的 `NODATA`/`NXDOMAIN`（默认 `negative_ttl: 60s`）正常缓存；`type: system` 上游按当前系统 DNS 服务器列表签名隔离缓存，切换网络或重启后自动失效旧网络条目。
 
 ### 分流与出站
 
@@ -216,9 +218,20 @@ dns:
 | `dns.enabled` | `false` | 是否启用内置 DNS 引擎 |
 | `dns.hijack` | `false` | 是否接管 53 端口 DNS 请求 |
 | `dns.timeout` | `4s` | DNS 上游请求超时时间 |
+| `dns.cache.enabled` | `true` | 是否启用 DNS 缓存 |
 | `dns.cache.max_entries` | `4096` | DNS 响应缓存条目上限 |
+| `dns.cache.algorithm` | `arc` | 缓存替换算法：`arc` 或 `lru` |
+| `dns.cache.negative_ttl` | `60s` | 无 SOA 的否定/NODATA 响应兜底缓存时间（`0s` 关闭） |
+| `dns.cache.stale.enabled` | `true` | 是否启用 Serve-Stale（过期可用与后台异步刷新） |
+| `dns.cache.stale.stale_ttl` | `24h` | 过期后仍可容忍使用的最大宽限窗口（最高 `24h`） |
+| `dns.cache.stale.serve_ttl` | `5s` | 返回过期缓存时重写给客户端的保护 TTL |
+| `dns.cache.persist.enabled` | `true` | 是否启用 DNS 缓存本地持久化 |
+| `dns.cache.persist.file` | `data/dns_cache.dat` | DNS 缓存持久化文件路径（相对于配置文件目录） |
+| `dns.cache.persist.sync_interval` | `1h` | 后台定期落盘间隔（`0s` 仅在退出/重载时保存） |
 | `routing.geoip_db` | `data/geoip.dat` | GeoIP 数据文件路径（相对于配置文件目录） |
 | `dns.geosite_file` | `data/geosite.dat`| GeoSite 数据文件路径（相对于配置文件目录） |
+| `web.enabled` | `false` | 是否启用内置 Web 状态控制台 |
+| `web.listen` | `127.0.0.1:9100` | Web 控制台监听地址（启用 `web.enabled` 时默认） |
 
 ## 命令行（CLI）参考
 
@@ -249,7 +262,7 @@ dns:
 | 命令 | 参数与选项 | 说明 |
 |---|---|---|
 | `proxy dns status` | `--json` | 查看上游请求统计与缓存状态 |
-| `proxy dns flush` | 无 | 清空 DNS 内存缓存 |
+| `proxy dns flush` | 无 | 清空 DNS 内存缓存与持久化文件 |
 | `proxy dns test <域名>` | `--type A` `--tcp` `--server <IP:PORT>` | 测试指定域名的解析流向 |
 | `proxy geo status` | `--json` | 查看当前生效的 Geo 数据库版本 |
 | `proxy geo update` | 无 | 检查并拉取最新 Geo 数据库 |
@@ -261,6 +274,13 @@ dns:
 | `proxy capture status` | `--json` | （Windows）检查 WinDivert 驱动状态 |
 | `proxy capture sniff` | `--duration 10s --filter <expr>` | （Windows）限时加载驱动抓包并统计数量 |
 | `proxy capture-cleanup` | 无 | （Linux）清理当前网络命名空间残留的接管规则 |
+
+### Web 控制台
+
+在配置文件中启用 `web.enabled: true`（或指定 `web.listen`）后，可通过浏览器访问控制台（默认 `http://127.0.0.1:9100`）：
+- 实时查看当前驱动/模式、活动连接（含还原后的真实源地址）与 UDP 会话统计；
+- 查看 DNS 命中率、缓存条目数、各上游请求分布及细分未命中原因（`uncacheable_queries`、`uncacheable_responses`、`negative_no_soa`、`system_bypass`）；
+- 查看滚动内存日志，并支持一键触发配置重载（Reload）或清空 DNS 缓存（Flush）。
 
 ## 系统服务
 
@@ -284,7 +304,7 @@ dns:
 ### Windows（SCM）
 
 1. 安装：
-   - 运行安装包 `dist/installer/Proxy-Setup-x64.exe`，安装到 `C:\Program Files\Proxy`。
+   - 运行安装包 `dist/installer/Proxy-Setup-x64.exe`，安装到 `C:\Program Files\Proxy`（升级或卸载时会自动停止服务并卸载 `WinDivert` 驱动以解除文件锁，安装完成后自动恢复运行）。
    - 配置文件保存在 `%USERPROFILE%\.proxy\proxy.yaml`，运行时数据在 `%USERPROFILE%\.proxy\runtime`。
 
 2. 服务管理（以管理员身份在 PowerShell 中执行）：
@@ -306,10 +326,12 @@ dns:
   - `scripts/windows/windivert-smoke-windows.ps1`：驱动加载、抓包与卸载测试。
   - `scripts/windows/windivert-relay-smoke-windows.ps1`：TCP/UDP 重定向与断网恢复测试。
   - `scripts/windows/manual-global-test-windows.ps1`：公网分流与 DNS 缓存测试。
+  - `scripts/windows/throughput-windows.ps1`：Windows 双栈与 WinDivert 吞吐测速与 CPU/RSS 采集。
 - Linux（在隔离网络命名空间运行，不修改宿主机网络）：
-  - `scripts/linux/global-linux.sh`：验证双栈全局接管与清理逻辑。
+  - `scripts/linux/global-linux.sh`：验证双栈全局接管（含 ULA 旁路）与清理逻辑。
   - `scripts/linux/m3-linux.sh`：验证 53 端口 DNS 接管与系统 DNS 解析。
   - `scripts/linux/upstream-bypass-linux.sh`：验证 cgroup v2 本地 SOCKS5/Docker 上游豁免。
+  - `scripts/linux/throughput-linux.sh`：Linux 命名空间吞吐与延迟基准测试。
 
 ### 平台状态与注意事项
 
