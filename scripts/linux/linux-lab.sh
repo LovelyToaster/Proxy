@@ -39,16 +39,16 @@ configure() {
     ip -n "$ns" -6 addr add "fe80::${ipv6##*::}" dev "$interface" nodad
     ip -n "$ns" link set "$interface" up
 }
-configure m0c c0 198.18.10.2/24 fd00:10::2/64
-configure m0g gc 198.18.10.1/24 fd00:10::1/64
-configure m0g gu 198.18.20.1/24 fd00:20::1/64
-configure m0u u0 198.18.20.2/24 fd00:20::2/64
+configure m0c c0 198.18.10.2/24 2001:2:0:10::2/64
+configure m0g gc 198.18.10.1/24 2001:2:0:10::1/64
+configure m0g gu 198.18.20.1/24 2001:2:0:20::1/64
+configure m0u u0 198.18.20.2/24 2001:2:0:20::2/64
 ip -n m0u addr add 198.18.20.3/24 dev u0
-ip -n m0u -6 addr add fd00:20::3/64 dev u0 nodad
+ip -n m0u -6 addr add 2001:2:0:20::3/64 dev u0 nodad
 ip -n m0c route add 198.18.20.0/24 via 198.18.10.1
-ip -n m0c -6 route add fd00:20::/64 via fd00:10::1
+ip -n m0c -6 route add 2001:2:0:20::/64 via 2001:2:0:10::1
 ip -n m0u route add 198.18.10.0/24 via 198.18.20.1
-ip -n m0u -6 route add fd00:10::/64 via fd00:20::1
+ip -n m0u -6 route add 2001:2:0:10::/64 via 2001:2:0:20::1
 
 gateway() {
     [[ $(ip netns exec m0g readlink /proc/self/ns/net) == "$gateway_ns" ]] || return 1
@@ -84,15 +84,15 @@ probe_all() {
     for ns in m0c m0g; do
         echo "probe namespace $ns"
         ip netns exec "$ns" "$binary" probe tcp4 198.18.20.2:18080
-        ip netns exec "$ns" "$binary" probe tcp6 '[fd00:20::2]:18080'
+        ip netns exec "$ns" "$binary" probe tcp6 '[2001:2:0:20::2]:18080'
         ip netns exec "$ns" "$binary" probe udp4 198.18.20.2:18080
-        ip netns exec "$ns" "$binary" probe udp6 '[fd00:20::2]:18080'
+        ip netns exec "$ns" "$binary" probe udp6 '[2001:2:0:20::2]:18080'
         ip netns exec "$ns" "$binary" probe-pair udp4 198.18.20.2:18080 198.18.20.3:18080
-        ip netns exec "$ns" "$binary" probe-pair udp6 '[fd00:20::2]:18080' '[fd00:20::3]:18080'
+        ip netns exec "$ns" "$binary" probe-pair udp6 '[2001:2:0:20::2]:18080' '[2001:2:0:20::3]:18080'
     done
 }
-launch m0u echo-udp6a echo udp6 '[fd00:20::2]:18080'
-launch m0u echo-udp6b echo udp6 '[fd00:20::3]:18080'
+launch m0u echo-udp6a echo udp6 '[2001:2:0:20::2]:18080'
+launch m0u echo-udp6b echo udp6 '[2001:2:0:20::3]:18080'
 launch m0u echo-udp4a echo udp4 198.18.20.2:18080
 launch m0u echo-udp4b echo udp4 198.18.20.3:18080
 probe_all

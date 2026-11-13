@@ -34,7 +34,7 @@ capture:
   ipv4: true
   ipv6: true
   port: 15080
-  cidrs: ["198.18.20.0/24", "fd00:20::/64"]
+  cidrs: ["198.18.20.0/24", "2001:2:0:20::/64"]
   ports: [18080]
 $ingress
 outbounds:

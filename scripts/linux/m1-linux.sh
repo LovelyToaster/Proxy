@@ -53,6 +53,12 @@ snapshot() {
     gateway ip -6 route show table all
     gateway nft -s list ruleset
 }
+ip -n m0c -6 addr add fd00:10::2/64 dev c0 nodad
+ip -n m0g -6 addr add fd00:10::1/64 dev gc nodad
+ip -n m0g -6 addr add fd00:20::1/64 dev gu nodad
+ip -n m0u -6 addr add fd00:20::2/64 dev u0 nodad
+ip -n m0c -6 route add fd00:20::/64 via fd00:10::1
+ip -n m0u -6 route add fd00:10::/64 via fd00:20::1
 snapshot >/run/gateway.before
 
 start_proxy() {
@@ -89,6 +95,7 @@ write_config local
 control config check
 start_proxy local
 tcp m0g
+ip netns exec m0g "$binary" probe tcp6 '[fd00:20::2]:18080'
 probe_all
 status=$(control status --json)
 grep -q '"cidr":2' <<<"$status"
@@ -118,6 +125,7 @@ gateway ip -4 route del local 203.0.113.30/32 dev lo table 100
 clean
 
 start_proxy gateway
+ip netns exec m0c "$binary" probe tcp6 '[fd00:20::2]:18080'
 probe_all
 status=$(control status --json)
 grep -q '"cidr":1' <<<"$status"

@@ -38,6 +38,12 @@ clean() {
     echo 'global capture cleanup timed out' >&2
     return 1
 }
+ip -n m0c -6 addr add fd00:10::2/64 dev c0 nodad
+ip -n m0g -6 addr add fd00:10::1/64 dev gc nodad
+ip -n m0g -6 addr add fd00:20::1/64 dev gu nodad
+ip -n m0u -6 addr add fd00:20::2/64 dev u0 nodad
+ip -n m0c -6 route add fd00:20::/64 via fd00:10::1
+ip -n m0u -6 route add fd00:10::/64 via fd00:20::1
 snapshot >/run/global.before
 launch m0g inbound-tcp4 echo tcp4 0.0.0.0:18081
 launch m0g inbound-tcp6 echo tcp6 '[::]:18081'
@@ -79,8 +85,15 @@ EOF
     probe_all
     # Local servers must still reply directly while OUTPUT capture is active.
     ip netns exec m0u "$binary" probe tcp4 198.18.20.1:18081
-    ip netns exec m0u "$binary" probe tcp6 '[fd00:20::1]:18081'
-    control status --json | grep -q '"captured":'
+    ip netns exec m0u "$binary" probe tcp6 '[2001:2:0:20::1]:18081'
+    connected_before=$(control status --json | grep -o '"connected":{[^}]*}')
+    [[ $connected_before == *'"captured":'* ]]
+    gateway nft list ruleset | grep -q 'fc00::/7'
+    gateway nft list ruleset | grep -q '192.168.0.0/16'
+    bypass_ns=$mode
+    if [[ $bypass_ns == local ]]; then bypass_ns=m0g; else bypass_ns=m0c; fi
+    ip netns exec "$bypass_ns" "$binary" probe tcp6 '[fd00:20::2]:18080'
+    [[ $(control status --json | grep -o '"connected":{[^}]*}') == "$connected_before" ]]
     gateway nft list ruleset | grep -q tproxy
     if gateway nft list ruleset | grep -q redirect; then exit 1; fi
     # No namespace was configured: cleanup must use the resolved exact identity.

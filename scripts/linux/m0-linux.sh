@@ -28,20 +28,20 @@ table inet m0 {
         type route hook output priority mangle; policy accept;
         meta mark & 2 != 0 return
         ip daddr 198.18.20.0/24 udp dport 18080 meta mark set 1
-        ip6 daddr fd00:20::/64 udp dport 18080 meta mark set 1
+        ip6 daddr 2001:2:0:20::/64 udp dport 18080 meta mark set 1
     }
     chain output_nat {
         type nat hook output priority dstnat; policy accept;
         meta mark & 2 != 0 return
         ip daddr 198.18.20.0/24 tcp dport 18080 redirect to :15080
-        ip6 daddr fd00:20::/64 tcp dport 18080 redirect to :15080
+        ip6 daddr 2001:2:0:20::/64 tcp dport 18080 redirect to :15080
     }
     chain input_capture {
         type filter hook prerouting priority mangle; policy accept;
         iifname "gc" ip daddr 198.18.20.0/24 tcp dport 18080 tproxy ip to :15081 meta mark set 1 accept
-        iifname "gc" ip6 daddr fd00:20::/64 tcp dport 18080 tproxy ip6 to :15081 meta mark set 1 accept
+        iifname "gc" ip6 daddr 2001:2:0:20::/64 tcp dport 18080 tproxy ip6 to :15081 meta mark set 1 accept
         iifname { "gc", "lo" } ip daddr 198.18.20.0/24 udp dport 18080 tproxy ip to :15081 meta mark set 1 accept
-        iifname { "gc", "lo" } ip6 daddr fd00:20::/64 udp dport 18080 tproxy ip6 to :15081 meta mark set 1 accept
+        iifname { "gc", "lo" } ip6 daddr 2001:2:0:20::/64 udp dport 18080 tproxy ip6 to :15081 meta mark set 1 accept
     }
 }
 EOF
@@ -66,9 +66,9 @@ gateway nft -f /run/m0.nft
 watchdog_pid=$!
 probe_all
 grep -Fq 'capture tcp4 target=198.18.20.2:18080' /run/redirect4.log /dev/null
-grep -Fq 'capture tcp6 target=[fd00:20::2]:18080' /run/redirect6.log /dev/null
+grep -Fq 'capture tcp6 target=[2001:2:0:20::2]:18080' /run/redirect6.log /dev/null
 grep -Fq 'capture tcp4 target=198.18.20.2:18080' /run/tcp4.log /dev/null
-grep -Fq 'capture tcp6 target=[fd00:20::2]:18080' /run/tcp6.log /dev/null
+grep -Fq 'capture tcp6 target=[2001:2:0:20::2]:18080' /run/tcp6.log /dev/null
 [[ $(grep -c '^.*capture udp4 target=' /run/udp4.log) == 8 ]]
 [[ $(grep -c '^.*capture udp6 target=' /run/udp6.log) == 8 ]]
 echo "dual-stack capture OK"

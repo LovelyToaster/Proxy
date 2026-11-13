@@ -63,8 +63,8 @@ dns:
 EOF
 launch m0u dns-udp4 echo udp4 198.18.20.2:53
 launch m0u dns-tcp4 echo tcp4 198.18.20.2:53
-launch m0u dns-udp6 echo udp6 '[fd00:20::2]:53'
-launch m0u dns-tcp6 echo tcp6 '[fd00:20::2]:53'
+launch m0u dns-udp6 echo udp6 '[2001:2:0:20::2]:53'
+launch m0u dns-tcp6 echo tcp6 '[2001:2:0:20::2]:53'
 start_upstream
 start_proxy() {
     nsenter --net=/run/netns/m0g setpriv --reuid=65534 --regid=65534 --clear-groups \
@@ -80,10 +80,10 @@ start_proxy() {
 check_flows() {
     # Ordinary root clients must still use SOCKS5, despite the root upstream.
     gateway "$binary" probe tcp4 198.18.20.2:18080
-    gateway "$binary" probe tcp6 '[fd00:20::2]:18080'
+    gateway "$binary" probe tcp6 '[2001:2:0:20::2]:18080'
     control status --json | grep -Fq "\"upstream\":${1:-2}"
     # Root sockets in the upstream cgroup bypass UDP and both forms of DNS.
-    for spec in 'udp4 198.18.20.2:18080' 'udp6 [fd00:20::2]:18080' 'udp4 198.18.20.2:53' 'tcp4 198.18.20.2:53' 'udp6 [fd00:20::2]:53' 'tcp6 [fd00:20::2]:53'; do
+    for spec in 'udp4 198.18.20.2:18080' 'udp6 [2001:2:0:20::2]:18080' 'udp4 198.18.20.2:53' 'tcp4 198.18.20.2:53' 'udp6 [2001:2:0:20::2]:53' 'tcp6 [2001:2:0:20::2]:53'; do
         read -r network target <<<"$spec"
         gateway bash -ec 'echo $$ >"$1/cgroup.procs"; shift; exec "$@"' -- "$cg" "$binary" probe "$network" "$target"
     done

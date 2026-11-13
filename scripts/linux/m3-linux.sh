@@ -54,7 +54,7 @@ start_daemon() {
 probe_dns() {
     local ns=$1 expected=$2
     local endpoint transport
-    for endpoint in 198.18.20.4:53 '[fd00:20::4]:53'; do
+    for endpoint in 198.18.20.4:53 '[2001:2:0:20::4]:53'; do
         for transport in udp tcp; do
             flags=()
             if [[ $transport == tcp ]]; then flags+=(--tcp); fi
@@ -78,7 +78,7 @@ capture:
   mode: $mode
   namespace: "$gateway_ns"
   port: 15080
-  cidrs: ["198.18.20.0/24", "fd00:20::/64"]
+  cidrs: ["198.18.20.0/24", "2001:2:0:20::/64"]
 $ingress
 outbounds:
   direct:
