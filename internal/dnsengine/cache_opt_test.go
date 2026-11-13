@@ -1,14 +1,17 @@
 package dnsengine
 
 import (
+	"context"
 	"net"
 	"net/netip"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
+	"proxy.local/m0/internal/systemdns"
 )
 
 func TestCacheKeyEDNS0AndECS(t *testing.T) {
@@ -154,5 +157,71 @@ func TestEngineMissSingleFlightAndMetrics(t *testing.T) {
 	st := e.Status()
 	if st.UncacheableQueries != 1 {
 		t.Fatalf("expected UncacheableQueries=1, got %d", st.UncacheableQueries)
+	}
+}
+
+func TestSystemUpstreamCachePolicyAcrossRestart(t *testing.T) {
+	var currentDNS atomic.Value
+	currentDNS.Store("192.0.2.53:53")
+
+	newSys := func() *systemUpstream {
+		return &systemUpstream{
+			discover: func(ctx context.Context) ([]systemdns.Server, error) {
+				addr := netip.MustParseAddrPort(currentDNS.Load().(string))
+				return []systemdns.Server{{Address: addr, Default: true}}, nil
+			},
+		}
+	}
+
+	sys1 := newSys()
+	p1 := sys1.cacheKeyPolicy("main", "example.com.")
+	p1Again := sys1.cacheKeyPolicy("main", "example.com.")
+	if p1 == "main" || p1 != p1Again {
+		t.Fatalf("expected stable scoped policy, got %q and %q", p1, p1Again)
+	}
+
+	// Persist cache entry under p1
+	now := time.Now()
+	req := new(dns.Msg).SetQuestion("example.com.", dns.TypeA)
+	key1, ok := makeKey(p1, req)
+	if !ok {
+		t.Fatal("expected cacheable key")
+	}
+	resp := new(dns.Msg).SetReply(req)
+	resp.Answer = []dns.RR{&dns.A{
+		Hdr: dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 120},
+		A:   netip.MustParseAddr("93.184.216.34").AsSlice(),
+	}}
+
+	c1 := newARCCache(16, staleOptions{})
+	c1.put(key1, resp, now)
+	cacheFile := filepath.Join(t.TempDir(), "dns_cache.dat")
+	if err := saveToFile(cacheFile, c1.snapshot()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate restart on the SAME network: restored cache hits
+	loaded, err := loadFromFile(cacheFile, now, staleOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c2 := newARCCache(16, staleOptions{})
+	c2.restore(loaded, now)
+
+	sysRestartSame := newSys()
+	keySame, _ := makeKey(sysRestartSame.cacheKeyPolicy("main", "example.com."), req)
+	if _, state := c2.get(keySame, req, now); state != entryFresh {
+		t.Fatalf("expected fresh hit after restart on same DNS, got %v", state)
+	}
+
+	// Simulate restart on a DIFFERENT network: restored cache misses
+	currentDNS.Store("198.51.100.53:53")
+	sysRestartChanged := newSys()
+	keyChanged, _ := makeKey(sysRestartChanged.cacheKeyPolicy("main", "example.com."), req)
+	if keyChanged == keySame {
+		t.Fatal("expected different cache key when system DNS changed")
+	}
+	if _, state := c2.get(keyChanged, req, now); state != entryMiss {
+		t.Fatalf("expected miss after restart on changed DNS, got %v", state)
 	}
 }

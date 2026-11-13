@@ -3,6 +3,8 @@ package dnsengine
 import (
 	"context"
 	"errors"
+	"fmt"
+	"hash/fnv"
 	"net"
 	"net/netip"
 	"sync"
@@ -17,6 +19,7 @@ type systemUpstream struct {
 	servers   []systemdns.Server
 	refreshed time.Time
 	err       error
+	lastSig   string
 	listen    []netip.AddrPort
 	dialer    net.Dialer
 	timeout   time.Duration
@@ -56,6 +59,29 @@ func (s *systemUpstream) candidates(name string) ([]netip.AddrPort, error) {
 		return nil, errors.New("no usable system DNS upstream for this name")
 	}
 	return result, nil
+}
+
+func (s *systemUpstream) cacheKeyPolicy(base, name string) string {
+	targets, err := s.candidates(name)
+	if err == nil && len(targets) > 0 {
+		h := fnv.New64a()
+		for _, target := range targets {
+			_, _ = h.Write([]byte(target.String()))
+			_, _ = h.Write([]byte{0})
+		}
+		sig := fmt.Sprintf("%016x", h.Sum64())
+		s.mu.Lock()
+		s.lastSig = sig
+		s.mu.Unlock()
+		return base + "#" + sig
+	}
+	s.mu.Lock()
+	sig := s.lastSig
+	s.mu.Unlock()
+	if sig != "" {
+		return base + "#" + sig
+	}
+	return base
 }
 
 func (s *systemUpstream) Exchange(q *dns.Msg) (*dns.Msg, error) {

@@ -373,12 +373,13 @@ func (e *Engine) answer(query *dns.Msg) *dns.Msg {
 	cache := e.cache
 	e.policyMu.RUnlock()
 
-	key, cacheable := makeKey(policy, query)
+	cachePolicy := policy
+	if sysUp, dynamic := up.(*systemUpstream); dynamic {
+		cachePolicy = sysUp.cacheKeyPolicy(policy, question.Name)
+	}
+	key, cacheable := makeKey(cachePolicy, query)
 	if !cacheable {
 		e.uncacheableQueries.Add(1)
-	} else if _, dynamic := up.(*systemUpstream); dynamic {
-		cacheable = false
-		e.systemBypass.Add(1)
 	}
 	if cacheable && cache.capacity() > 0 {
 		found, state := cache.get(key, query, time.Now())
