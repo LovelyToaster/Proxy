@@ -235,3 +235,56 @@ func TestM3LabUpstream(t *testing.T) {
 	t.Log("DNS fixture ready")
 	select {}
 }
+
+func TestEngineReplaceWithPersistClosesCleanly(t *testing.T) {
+	persistFile := filepath.Join(t.TempDir(), "dns-cache.json")
+	cfg := config.DNS{
+		Enabled: true,
+		Timeout: time.Second,
+		Cache: config.DNSCache{
+			Enabled:    true,
+			MaxEntries: 64,
+			Persist: config.DNSCachePersist{
+				File:         persistFile,
+				SyncInterval: 10 * time.Millisecond,
+			},
+		},
+		Upstreams: map[string]config.DNSUpstream{
+			"u": {Type: "udp", Address: "127.0.0.1:53"},
+		},
+		Rules: []config.DNSRule{{Upstream: "u"}},
+	}
+
+	e1, err := New(cfg, net.Dialer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e2, err := New(cfg, net.Dialer{})
+	if err != nil {
+		_ = e1.Close()
+		t.Fatal(err)
+	}
+	e3, err := New(cfg, net.Dialer{})
+	if err != nil {
+		_ = e2.Close()
+		_ = e1.Close()
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		e1.Replace(e2)
+		time.Sleep(35 * time.Millisecond)
+		e1.Replace(e3)
+		done <- e1.Close()
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Close after Replace failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close after Replace timed out")
+	}
+}

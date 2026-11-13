@@ -33,6 +33,7 @@ type Engine struct {
 	fallback             string
 	cache                dnsCache
 	cachePersist         config.DNSCachePersist
+	persistMu            sync.Mutex
 	persistStop          chan struct{}
 	persistDone          chan struct{}
 	refreshGroup         singleflight.Group
@@ -108,11 +109,7 @@ func New(cfg config.DNS, dialer net.Dialer, outboundSets ...map[string]config.Ou
 		matchers: matchers, fallback: cfg.Fallback, cache: cacheInstance, workers: make(chan struct{}, 128),
 		cachePersist: cfg.Cache.Persist,
 	}
-	if cfg.Cache.Enabled && cfg.Cache.Persist.IsEnabled() && cfg.Cache.Persist.File != "" && cfg.Cache.Persist.SyncInterval > 0 && entries > 0 {
-		e.persistStop = make(chan struct{})
-		e.persistDone = make(chan struct{})
-		go e.periodicSync(cfg.Cache.Persist.File, cfg.Cache.Persist.SyncInterval)
-	}
+	e.startPersistLocked()
 	root := &infrastructure{cfg: cfg, matchers: matchers, dialer: dialer}
 	if len(outboundSets) > 0 {
 		root.outbounds = outboundSets[0]
@@ -165,11 +162,7 @@ func (e *Engine) Close() error {
 	if e == nil {
 		return nil
 	}
-	if e.persistStop != nil {
-		close(e.persistStop)
-		<-e.persistDone
-		e.persistStop = nil
-	}
+	e.stopPersist()
 	e.savePersist()
 	e.packets.Wait()
 	var err error
@@ -226,13 +219,40 @@ func (e *Engine) savePersist() {
 	}
 }
 
-func (e *Engine) periodicSync(file string, interval time.Duration) {
-	defer close(e.persistDone)
+func (e *Engine) startPersistLocked() {
+	if !e.cachePersist.IsEnabled() || e.cachePersist.File == "" || e.cachePersist.SyncInterval <= 0 || e.cache == nil || e.cache.capacity() == 0 {
+		return
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	e.persistStop = stop
+	e.persistDone = done
+	go e.periodicSync(e.cachePersist.SyncInterval, stop, done)
+}
+
+func (e *Engine) stopPersist() {
+	e.persistMu.Lock()
+	defer e.persistMu.Unlock()
+	e.stopPersistLocked()
+}
+
+func (e *Engine) stopPersistLocked() {
+	if e.persistStop == nil {
+		return
+	}
+	close(e.persistStop)
+	<-e.persistDone
+	e.persistStop = nil
+	e.persistDone = nil
+}
+
+func (e *Engine) periodicSync(interval time.Duration, stop <-chan struct{}, done chan<- struct{}) {
+	defer close(done)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-e.persistStop:
+		case <-stop:
 			return
 		case <-ticker.C:
 			e.savePersist()
@@ -446,24 +466,18 @@ func (e *Engine) countUpstream(name string) {
 
 // Replace takes ownership of the prepared policies while keeping listeners and counters.
 func (e *Engine) Replace(next *Engine) {
+	next.stopPersist()
+
+	e.persistMu.Lock()
+	e.stopPersistLocked()
 	e.policyMu.Lock()
 	old := &Engine{upstreams: e.upstreams, bootstrap: e.bootstrap}
-	if e.persistStop != nil {
-		close(e.persistStop)
-		<-e.persistDone
-		e.persistStop = nil
-		e.persistDone = nil
-	}
 	e.upstreams, e.bootstrap, e.rules, e.matchers, e.fallback, e.cache = next.upstreams, next.bootstrap, next.rules, next.matchers, next.fallback, next.cache
 	e.infrastructure = next.infrastructure
 	e.cachePersist = next.cachePersist
-	if next.persistStop != nil {
-		e.persistStop = next.persistStop
-		e.persistDone = next.persistDone
-		next.persistStop = nil
-		next.persistDone = nil
-	}
+	e.startPersistLocked()
 	e.policyMu.Unlock()
+	e.persistMu.Unlock()
 	old.Close()
 }
 
