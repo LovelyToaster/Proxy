@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -13,25 +14,44 @@ type Conn interface {
 	CloseWrite() error
 }
 
+var copyBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 256<<10)
+		return &b
+	},
+}
+
 func Relay(client, server Conn, idle time.Duration) error {
 	var touch func()
 	if idle > 0 {
-		var mu sync.Mutex
+		throttle := min(time.Second, idle/4)
+		var lastTouch atomic.Int64
 		touch = func() {
-			mu.Lock()
-			defer mu.Unlock()
-			deadline := time.Now().Add(idle)
-			client.SetDeadline(deadline)
-			server.SetDeadline(deadline)
+			now := time.Now()
+			nowNano := now.UnixNano()
+			prev := lastTouch.Load()
+			if prev != 0 && nowNano-prev < int64(throttle) {
+				return
+			}
+			if lastTouch.CompareAndSwap(prev, nowNano) {
+				deadline := now.Add(idle)
+				_ = client.SetDeadline(deadline)
+				_ = server.SetDeadline(deadline)
+			}
 		}
 		touch()
 	}
 	copyHalf := func(dst, src Conn) error {
-		var reader io.Reader = src
-		if touch != nil {
-			reader = activeReader{Reader: src, touch: touch}
+		handled, err := trySplice(dst, src, touch)
+		if !handled {
+			var reader io.Reader = src
+			if touch != nil {
+				reader = activeReader{Reader: src, touch: touch}
+			}
+			bufPtr := copyBufPool.Get().(*[]byte)
+			_, err = io.CopyBuffer(dst, reader, *bufPtr)
+			copyBufPool.Put(bufPtr)
 		}
-		_, err := io.Copy(dst, reader)
 		if err != nil {
 			dst.Close()
 			src.Close()
