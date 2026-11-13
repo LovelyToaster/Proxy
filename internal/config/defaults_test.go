@@ -112,7 +112,7 @@ func TestDNSCacheConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DNS.Cache.Algorithm != "arc" || !cfg.DNS.Cache.Stale.IsEnabled() || cfg.DNS.Cache.Stale.StaleTTL != time.Hour || cfg.DNS.Cache.Stale.ServeTTL != 5*time.Second || !cfg.DNS.Cache.Persist.IsEnabled() || cfg.DNS.Cache.Persist.SyncInterval != 10*time.Minute {
+	if cfg.DNS.Cache.Algorithm != "arc" || !cfg.DNS.Cache.Stale.IsEnabled() || cfg.DNS.Cache.Stale.StaleTTL != 24*time.Hour || cfg.DNS.Cache.Stale.ServeTTL != 5*time.Second || !cfg.DNS.Cache.Persist.IsEnabled() || cfg.DNS.Cache.Persist.SyncInterval != time.Hour {
 		t.Fatalf("unexpected cache defaults: %+v", cfg.DNS.Cache)
 	}
 
