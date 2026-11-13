@@ -1,6 +1,9 @@
 ﻿Unicode true
 !include "MUI2.nsh"
 !include "x64.nsh"
+!include "StrFunc.nsh"
+${StrStr}
+Var WasRunning
 Name "Proxy"
 OutFile "..\..\dist\installer\Proxy-Setup-x64.exe"
 InstallDir "$PROGRAMFILES64\Proxy"
@@ -46,16 +49,42 @@ FunctionEnd
  ${EndIf}
 !macroend
 
+!macro RemoveWinDivertDriver
+ nsExec::ExecToLog '"$SYSDIR\sc.exe" query WinDivert'
+ Pop $2
+ ${If} $2 == 0
+  nsExec::ExecToLog '"$SYSDIR\net.exe" stop WinDivert'
+  Pop $1
+  nsExec::ExecToLog '"$SYSDIR\sc.exe" delete WinDivert'
+  Pop $1
+  Sleep 500
+ ${ElseIf} $2 != 1060
+  MessageBox MB_ICONSTOP "Unable to query WinDivert."
+  Abort
+ ${EndIf}
+!macroend
+
 Section "Proxy"
  SetShellVarContext all
+ StrCpy $WasRunning 0
  ReadRegStr $0 HKLM "Software\ProxyTransparent" "InstallDir"
  ${If} $0 != ""
   ${If} $0 != $INSTDIR
    MessageBox MB_ICONSTOP "Upgrade using the existing directory."
    Abort
   ${EndIf}
+  nsExec::ExecToStack '"$SYSDIR\sc.exe" query ProxyD'
+  Pop $2
+  Pop $3
+  ${If} $2 == 0
+   ${StrStr} $4 "$3" "RUNNING"
+   ${If} $4 != ""
+    StrCpy $WasRunning 1
+   ${EndIf}
+  ${EndIf}
   !insertmacro RemoveProxyService
  ${EndIf}
+ !insertmacro RemoveWinDivertDriver
  SetOutPath "$INSTDIR"
  ; Remove files shipped only by earlier installer revisions.
  Delete "$INSTDIR\installer-environment.ps1"
@@ -93,12 +122,20 @@ Section "Proxy"
  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ProxyTransparent" "DisplayVersion" "0.1.0"
  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ProxyTransparent" "NoModify" 1
  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ProxyTransparent" "NoRepair" 1
+ ${If} $WasRunning == 1
+  nsExec::ExecToLog '"$INSTDIR\proxy.exe" start'
+  Pop $1
+  ${If} $1 != 0
+   MessageBox MB_ICONEXCLAMATION "Installation completed, but ProxyD could not be started automatically."
+  ${EndIf}
+ ${EndIf}
 SectionEnd
 
 Section "Uninstall"
  SetRegView 64
  SetShellVarContext all
  !insertmacro RemoveProxyService
+ !insertmacro RemoveWinDivertDriver
  nsExec::ExecToLog '"$INSTDIR\proxy.exe" installer-path --action remove --directory "$INSTDIR"'
  Pop $1
  ${If} $1 != 0
