@@ -19,7 +19,10 @@ type Matcher struct {
 }
 
 func (m *Matcher) Match(name string) bool {
-	name = normalize(name)
+	return m.MatchNormalized(Normalize(name))
+}
+
+func (m *Matcher) MatchNormalized(name string) bool {
 	if _, ok := m.exact[name]; ok {
 		return true
 	}
@@ -42,7 +45,8 @@ func (m *Matcher) Match(name string) bool {
 	return false
 }
 
-func normalize(name string) string { return strings.ToLower(strings.TrimSuffix(name, ".")) }
+func Normalize(name string) string { return strings.ToLower(strings.TrimSuffix(name, ".")) }
+func normalize(name string) string { return Normalize(name) }
 
 func Load(path string, categories []string) (map[string]*Matcher, error) {
 	if len(categories) == 0 {

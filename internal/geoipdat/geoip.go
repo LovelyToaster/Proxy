@@ -10,19 +10,70 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
+type trieNode struct {
+	child    [2]uint32
+	terminal bool
+}
+
 type Set struct {
-	prefixes map[netip.Prefix]bool
-	inverse  bool
-	lengths  [129]bool
+	v4      []trieNode
+	v6      []trieNode
+	inverse bool
+}
+
+func insertTrie(nodes *[]trieNode, addr []byte, bits int) {
+	if len(*nodes) == 0 {
+		*nodes = append(*nodes, trieNode{})
+	}
+	idx := uint32(0)
+	for bit := 0; bit < bits; bit++ {
+		if (*nodes)[idx].terminal {
+			return
+		}
+		b := (addr[bit/8] >> (7 - bit%8)) & 1
+		next := (*nodes)[idx].child[b]
+		if next == 0 {
+			next = uint32(len(*nodes))
+			*nodes = append(*nodes, trieNode{})
+			(*nodes)[idx].child[b] = next
+		}
+		idx = next
+	}
+	(*nodes)[idx].terminal = true
+}
+
+func matchTrie(nodes []trieNode, addr []byte) bool {
+	if len(nodes) == 0 {
+		return false
+	}
+	idx := uint32(0)
+	if nodes[0].terminal {
+		return true
+	}
+	maxBits := len(addr) * 8
+	for bit := 0; bit < maxBits; bit++ {
+		b := (addr[bit/8] >> (7 - bit%8)) & 1
+		next := nodes[idx].child[b]
+		if next == 0 {
+			return false
+		}
+		idx = next
+		if nodes[idx].terminal {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Set) Match(ip netip.Addr) bool {
-	found := false
-	for bits := ip.BitLen(); bits >= 0; bits-- {
-		if s.lengths[bits] && s.prefixes[netip.PrefixFrom(ip, bits).Masked()] {
-			found = true
-			break
-		}
+	ip = ip.Unmap()
+	var found bool
+	if ip.Is4() {
+		a := ip.As4()
+		found = matchTrie(s.v4, a[:])
+	} else if ip.Is6() {
+		a := ip.As16()
+		found = matchTrie(s.v6, a[:])
 	}
 	return found != s.inverse
 }
@@ -122,7 +173,7 @@ func parse(data []byte, codes []string) (map[string]*Set, error) {
 		}
 		seen[code] = true
 		_, needed := selected[code]
-		set := &Set{prefixes: map[netip.Prefix]bool{}, inverse: inverse}
+		set := &Set{inverse: inverse}
 		err := walk(f.data, func(x field) error {
 			if x.num != 2 {
 				return nil
@@ -159,8 +210,13 @@ func parse(data []byte, codes []string) (map[string]*Set, error) {
 			}
 			if needed {
 				prefix := netip.PrefixFrom(ip, int(bits)).Masked()
-				set.prefixes[prefix] = true
-				set.lengths[bits] = true
+				if ip.Is4() {
+					a := prefix.Addr().As4()
+					insertTrie(&set.v4, a[:], int(bits))
+				} else {
+					a := prefix.Addr().As16()
+					insertTrie(&set.v6, a[:], int(bits))
+				}
 			}
 			return nil
 		})

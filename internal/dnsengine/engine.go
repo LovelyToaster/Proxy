@@ -29,6 +29,7 @@ type Engine struct {
 	upstreams            map[string]upstream.Upstream
 	bootstrap            []io.Closer
 	rules                []config.DNSRule
+	compiled             []compiledRule
 	matchers             map[string]*geosite.Matcher
 	fallback             string
 	cache                dnsCache
@@ -50,6 +51,23 @@ type Engine struct {
 	failed               atomic.Uint64
 	packets              sync.WaitGroup
 	upstreamRequests     sync.Map
+}
+
+type compiledRule struct {
+	rule    config.DNSRule
+	matcher *geosite.Matcher
+}
+
+func compileRules(rules []config.DNSRule, matchers map[string]*geosite.Matcher) []compiledRule {
+	out := make([]compiledRule, len(rules))
+	for i, r := range rules {
+		var m *geosite.Matcher
+		if r.GeoSite != "" {
+			m = matchers[strings.ToUpper(r.GeoSite)]
+		}
+		out[i] = compiledRule{rule: r, matcher: m}
+	}
+	return out
 }
 
 type Status struct {
@@ -106,6 +124,7 @@ func New(cfg config.DNS, dialer net.Dialer, outboundSets ...map[string]config.Ou
 	}
 	e := &Engine{
 		listen: cfg.Listen, upstreams: make(map[string]upstream.Upstream), rules: cfg.Rules,
+		compiled: compileRules(cfg.Rules, matchers),
 		matchers: matchers, fallback: cfg.Fallback, cache: cacheInstance, workers: make(chan struct{}, 128),
 		cachePersist: cfg.Cache.Persist,
 	}
@@ -261,8 +280,17 @@ func (e *Engine) periodicSync(interval time.Duration, stop <-chan struct{}, done
 }
 
 func (e *Engine) policy(name string) string {
+	norm := geosite.Normalize(name)
+	if len(e.compiled) > 0 {
+		for _, c := range e.compiled {
+			if c.rule.Default() || c.rule.MatchDomain(norm) || (c.matcher != nil && c.matcher.MatchNormalized(norm)) {
+				return c.rule.Upstream
+			}
+		}
+		return ""
+	}
 	for _, rule := range e.rules {
-		if rule.Default() || rule.MatchDomain(name) || rule.GeoSite != "" && e.matchers[strings.ToUpper(rule.GeoSite)].Match(name) {
+		if rule.Default() || rule.MatchDomain(norm) || (rule.GeoSite != "" && e.matchers[strings.ToUpper(rule.GeoSite)].MatchNormalized(norm)) {
 			return rule.Upstream
 		}
 	}
@@ -472,7 +500,7 @@ func (e *Engine) Replace(next *Engine) {
 	e.stopPersistLocked()
 	e.policyMu.Lock()
 	old := &Engine{upstreams: e.upstreams, bootstrap: e.bootstrap}
-	e.upstreams, e.bootstrap, e.rules, e.matchers, e.fallback, e.cache = next.upstreams, next.bootstrap, next.rules, next.matchers, next.fallback, next.cache
+	e.upstreams, e.bootstrap, e.rules, e.compiled, e.matchers, e.fallback, e.cache = next.upstreams, next.bootstrap, next.rules, next.compiled, next.matchers, next.fallback, next.cache
 	e.infrastructure = next.infrastructure
 	e.cachePersist = next.cachePersist
 	e.startPersistLocked()

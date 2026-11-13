@@ -52,3 +52,23 @@ func TestDATBoundariesAndInverse(t *testing.T) {
 		t.Fatal("invalid prefix accepted")
 	}
 }
+
+func BenchmarkGeoIPMatch(b *testing.B) {
+	data := category("CN", "1.0.1.0/24", "1.0.2.0/23", "114.114.114.0/24", "192.0.2.0/24", "2001:db8::/32", "240e::/20")
+	sets, err := parse(data, []string{"CN"})
+	if err != nil {
+		b.Fatal(err)
+	}
+	set := sets["CN"]
+	ips := []netip.Addr{
+		netip.MustParseAddr("114.114.114.114"),
+		netip.MustParseAddr("8.8.8.8"),
+		netip.MustParseAddr("2001:db8:ffff::1"),
+		netip.MustParseAddr("2606:4700:4700::1111"),
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := range b.N {
+		_ = set.Match(ips[i&3])
+	}
+}

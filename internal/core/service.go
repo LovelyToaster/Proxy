@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"proxy.local/m0/internal/capture"
@@ -40,12 +41,19 @@ type connection struct {
 	Started     time.Time      `json:"started"`
 }
 
+type routeSnapshot struct {
+	cfg        config.Config
+	routes     *routing.Table
+	generation uint64
+}
+
 type state struct {
 	configPath       string
 	applyAutostart   func(bool) error
 	runtimeDirectory string
 	mu               sync.Mutex
 	updates          sync.Mutex
+	snap             atomic.Pointer[routeSnapshot]
 	cfg              config.Config
 	routes           *routing.Table
 	generation       uint64
@@ -133,6 +141,7 @@ func ServeReadyManaged(parent context.Context, path, directory string, ready fun
 		return err
 	}
 	state := &state{cfg: cfg, routes: routes, generation: 1, active: make(map[uint64]connection), connected: make(map[string]uint64), store: store, geo: manifest, geoTimer: make(chan struct{}, 1)}
+	state.snap.Store(&routeSnapshot{cfg: cfg, routes: routes, generation: 1})
 	state.runtimeDirectory = directory
 	state.configPath = path
 	state.applyAutostart = apply
@@ -359,19 +368,27 @@ func (s *state) interceptDNS(listener *capture.PacketListener) func([]byte, neti
 	}
 }
 
-func (s *state) resolveUDP(target netip.AddrPort) (session.Route, error) {
+func (s *state) snapshot() routeSnapshot {
+	if ptr := s.snap.Load(); ptr != nil {
+		return *ptr
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	name, err := s.routes.Select(target, "udp")
+	return routeSnapshot{cfg: s.cfg, routes: s.routes, generation: s.generation}
+}
+
+func (s *state) resolveUDP(target netip.AddrPort) (session.Route, error) {
+	snap := s.snapshot()
+	name, err := snap.routes.Select(target, "udp")
 	if err != nil {
 		return session.Route{}, err
 	}
-	proxy := s.cfg.Outbounds[name]
+	proxy := snap.cfg.Outbounds[name]
 	if proxy.Type == "http" && proxy.UDPFallback != "" {
 		name = proxy.UDPFallback
-		proxy = s.cfg.Outbounds[name]
+		proxy = snap.cfg.Outbounds[name]
 	}
-	return session.Route{Name: name, Outbound: proxy, Dialer: s.dns.Dialer(capture.Dialer(s.cfg.Capture)), Network: s.cfg.Network}, nil
+	return session.Route{Name: name, Outbound: proxy, Dialer: s.dns.Dialer(capture.Dialer(snap.cfg.Capture)), Network: snap.cfg.Network}, nil
 }
 
 func closeListeners(listeners []capture.Listener) {
@@ -394,35 +411,36 @@ func (s *state) serveTCP(ctx context.Context, listener capture.Listener, workers
 			continue
 		}
 
-		s.mu.Lock()
-		if len(s.active) >= s.cfg.Network.MaxConnections {
-			s.mu.Unlock()
-			tcp.Close()
-			continue
-		}
+		snap := s.snapshot()
 		isDNS := listener.Transparent && target.Port() == 53 && s.dns != nil
 		name := "dns"
 		if !isDNS {
-			name, err = s.routes.Select(target, "tcp")
+			name, err = snap.routes.Select(target, "tcp")
 		}
 		if err != nil {
-			s.mu.Unlock()
 			tcp.Close()
 			log.Printf("TCP routing: %v", err)
 			continue
 		}
-		proxy := s.cfg.Outbounds[name]
-		network := s.cfg.Network
-		dialer := s.dns.Dialer(capture.Dialer(s.cfg.Capture))
-		s.nextID++
-		id := s.nextID
+		proxy := snap.cfg.Outbounds[name]
+		network := snap.cfg.Network
+		dialer := s.dns.Dialer(capture.Dialer(snap.cfg.Capture))
 		source := tcp.RemoteAddr().String()
 		if listener.Source != nil {
 			if src, err := listener.Source(tcp); err == nil && src.IsValid() {
 				source = src.String()
 			}
 		}
-		s.active[id] = connection{id, source, target, name, s.generation, time.Now()}
+
+		s.mu.Lock()
+		if len(s.active) >= snap.cfg.Network.MaxConnections {
+			s.mu.Unlock()
+			tcp.Close()
+			continue
+		}
+		s.nextID++
+		id := s.nextID
+		s.active[id] = connection{id, source, target, name, snap.generation, time.Now()}
 		s.mu.Unlock()
 
 		workers.Go(func() {

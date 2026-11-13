@@ -67,6 +67,7 @@ func (s *state) publish(cfg config.Config, routes *routing.Table, dns *dnsengine
 	s.cfg, s.routes, s.geo = cfg, routes, manifest
 	s.generation++
 	generation := s.generation
+	s.snap.Store(&routeSnapshot{cfg: cfg, routes: routes, generation: generation})
 	s.mu.Unlock()
 	if intervalChanged {
 		select {

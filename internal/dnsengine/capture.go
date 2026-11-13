@@ -2,11 +2,18 @@ package dnsengine
 
 import (
 	"net"
-	"slices"
+	"sync"
 	"time"
 
 	"github.com/miekg/dns"
 )
+
+var dnsPacketPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 4096)
+		return &b
+	},
+}
 
 func (e *Engine) HandleStream(conn net.Conn) {
 	channel := &dns.Conn{Conn: conn}
@@ -37,11 +44,15 @@ func (e *Engine) SubmitPacket(packet []byte, send func([]byte) error) {
 		e.failed.Add(1)
 		return
 	}
-	wire := slices.Clone(packet)
+	bufPtr := dnsPacketPool.Get().(*[]byte)
+	n := copy(*bufPtr, packet)
+	wire := (*bufPtr)[:n]
 	e.packets.Go(func() {
 		defer func() { <-e.workers }()
 		q := new(dns.Msg)
-		if err := q.Unpack(wire); err != nil || q.Response {
+		err := q.Unpack(wire)
+		dnsPacketPool.Put(bufPtr)
+		if err != nil || q.Response {
 			e.failed.Add(1)
 			return
 		}
