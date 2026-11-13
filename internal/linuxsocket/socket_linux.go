@@ -95,18 +95,25 @@ func DecodeDestination(data []byte, ipv6 bool) (netip.AddrPort, error) {
 }
 
 func OriginalUDP(control []byte, ipv6 bool) (netip.AddrPort, error) {
-	messages, err := syscall.ParseSocketControlMessage(control)
-	if err != nil {
-		return netip.AddrPort{}, err
-	}
 	level, kind := int32(syscall.IPPROTO_IP), int32(ipOriginalDestination)
 	if ipv6 {
 		level, kind = syscall.IPPROTO_IPV6, ipv6OriginalDestination
 	}
-	for _, message := range messages {
-		if message.Header.Level == level && message.Header.Type == kind {
-			return DecodeDestination(message.Data, ipv6)
+	const cmsgAlign = int(unsafe.Sizeof(uintptr(0)))
+	for len(control) >= syscall.SizeofCmsghdr {
+		hdr := (*syscall.Cmsghdr)(unsafe.Pointer(&control[0]))
+		cmsgLen := int(hdr.Len)
+		if cmsgLen < syscall.SizeofCmsghdr || cmsgLen > len(control) {
+			break
 		}
+		if hdr.Level == level && hdr.Type == kind {
+			return DecodeDestination(control[syscall.SizeofCmsghdr:cmsgLen], ipv6)
+		}
+		step := (cmsgLen + cmsgAlign - 1) &^ (cmsgAlign - 1)
+		if step <= 0 || step >= len(control) {
+			break
+		}
+		control = control[step:]
 	}
 	return netip.AddrPort{}, errors.New("missing UDP original destination")
 }

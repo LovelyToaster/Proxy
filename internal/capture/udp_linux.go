@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -62,9 +63,11 @@ type replyPool struct {
 }
 
 type replySocket struct {
-	conn    *net.UDPConn
-	refs    int
-	writeMu sync.Mutex
+	conn         *net.UDPConn
+	refs         int
+	writeMu      sync.Mutex
+	lastDeadline atomic.Int64
+	idleTimer    *time.Timer
 }
 
 func (p *replyPool) acquire(peer, target netip.AddrPort) (Reply, error) {
@@ -79,13 +82,20 @@ func (p *replyPool) acquire(peer, target netip.AddrPort) (Reply, error) {
 		}
 		socket = &replySocket{conn: pc.(*net.UDPConn)}
 		p.open[target] = socket
+	} else if socket.idleTimer != nil {
+		socket.idleTimer.Stop()
+		socket.idleTimer = nil
 	}
 	socket.refs++
 	return Reply{
 		Write: func(packet []byte) error {
 			socket.writeMu.Lock()
 			defer socket.writeMu.Unlock()
-			socket.conn.SetWriteDeadline(time.Now().Add(time.Second))
+			now := time.Now()
+			if now.UnixNano()-socket.lastDeadline.Load() >= int64(250*time.Millisecond) {
+				socket.lastDeadline.Store(now.UnixNano())
+				_ = socket.conn.SetWriteDeadline(now.Add(time.Second))
+			}
 			_, err := socket.conn.WriteToUDPAddrPort(packet, peer)
 			return err
 		},
@@ -94,8 +104,17 @@ func (p *replyPool) acquire(peer, target netip.AddrPort) (Reply, error) {
 			defer p.mu.Unlock()
 			socket.refs--
 			if socket.refs == 0 {
-				delete(p.open, target)
-				socket.conn.Close()
+				if socket.idleTimer != nil {
+					socket.idleTimer.Stop()
+				}
+				socket.idleTimer = time.AfterFunc(2*time.Second, func() {
+					p.mu.Lock()
+					defer p.mu.Unlock()
+					if socket.refs == 0 && p.open[target] == socket {
+						delete(p.open, target)
+						socket.conn.Close()
+					}
+				})
 			}
 		},
 	}, nil
