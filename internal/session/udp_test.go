@@ -86,3 +86,53 @@ func TestQUICThroughUDP(t *testing.T) {
 		t.Fatalf("unexpected UDP sessions: %+v", stats)
 	}
 }
+
+func BenchmarkUDPRelay(b *testing.B) {
+	server, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer server.Close()
+	go func() {
+		buf := make([]byte, 2048)
+		for {
+			n, addr, err := server.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			_, _ = server.WriteTo(buf[:n], addr)
+		}
+	}()
+
+	listener, err := capture.ListenExplicitUDP(netip.MustParseAddrPort("127.0.0.1:0"), server.LocalAddr().(*net.UDPAddr).AddrPort())
+	if err != nil {
+		b.Fatal(err)
+	}
+	manager := NewUDP(func(netip.AddrPort) (Route, error) {
+		return Route{Name: "direct", Outbound: config.Outbound{Type: "direct"},
+			Network: config.Network{MaxUDPSessions: 4, ConnectTimeout: time.Second, UDPTimeout: 5 * time.Second}}, nil
+	})
+	stopped := make(chan struct{})
+	go func() { defer close(stopped); _ = manager.Serve(listener, nil) }()
+	defer func() { listener.Close(); <-stopped; manager.Close() }()
+
+	client, err := net.Dial("udp", listener.LocalAddr().String())
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer client.Close()
+
+	payload := make([]byte, 1200)
+	buf := make([]byte, 2048)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(payload)))
+	b.ResetTimer()
+	for range b.N {
+		if _, err := client.Write(payload); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := client.Read(buf); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

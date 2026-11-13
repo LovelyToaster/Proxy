@@ -54,8 +54,20 @@ type flow struct {
 	target   netip.AddrPort
 }
 
+type udpPacket struct {
+	buf  *[]byte
+	data []byte
+}
+
+var udpBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 65535)
+		return &b
+	},
+}
+
 type association struct {
-	packets chan []byte
+	packets chan udpPacket
 }
 
 func NewUDP(resolve func(netip.AddrPort) (Route, error)) *UDP {
@@ -117,7 +129,7 @@ func (m *UDP) submit(key flow, payload []byte) {
 			}
 			return
 		}
-		session = &association{packets: make(chan []byte, queueSize)}
+		session = &association{packets: make(chan udpPacket, queueSize)}
 		m.sessions[key] = session
 		m.workers.Go(func() { m.run(key, session, route) })
 	}
@@ -126,7 +138,9 @@ func (m *UDP) submit(key flow, payload []byte) {
 		m.dropped.Add(1)
 		return
 	}
-	session.packets <- append([]byte(nil), payload...)
+	bufPtr := udpBufPool.Get().(*[]byte)
+	n := copy(*bufPtr, payload)
+	session.packets <- udpPacket{buf: bufPtr, data: (*bufPtr)[:n]}
 }
 
 func (m *UDP) run(key flow, session *association, route Route) {
@@ -136,7 +150,8 @@ func (m *UDP) run(key flow, session *association, route Route) {
 		delete(m.sessions, key)
 		close(session.packets)
 		for pending := range session.packets {
-			m.pendingBytes.Add(-int64(len(pending) + 1))
+			m.pendingBytes.Add(-int64(len(pending.data) + 1))
+			udpBufPool.Put(pending.buf)
 			m.dropped.Add(1)
 		}
 	}()
@@ -156,11 +171,18 @@ func (m *UDP) run(key flow, session *association, route Route) {
 	m.opened[route.Name]++
 	m.mu.Unlock()
 
-	var activity sync.Mutex
+	throttle := min(time.Second, route.Network.UDPTimeout/4)
+	var lastTouch atomic.Int64
 	touch := func() {
-		activity.Lock()
-		defer activity.Unlock()
-		conn.SetDeadline(time.Now().Add(route.Network.UDPTimeout))
+		now := time.Now()
+		nowNano := now.UnixNano()
+		prev := lastTouch.Load()
+		if prev != 0 && nowNano-prev < int64(throttle) {
+			return
+		}
+		if lastTouch.CompareAndSwap(prev, nowNano) {
+			_ = conn.SetDeadline(now.Add(route.Network.UDPTimeout))
+		}
 	}
 	touch()
 	stop := context.AfterFunc(m.ctx, func() { conn.Close() })
@@ -168,7 +190,9 @@ func (m *UDP) run(key flow, session *association, route Route) {
 	received := make(chan struct{})
 	go func() {
 		defer close(received)
-		payload := make([]byte, 65535)
+		bufPtr := udpBufPool.Get().(*[]byte)
+		defer udpBufPool.Put(bufPtr)
+		payload := *bufPtr
 		for {
 			n, err := conn.Read(payload)
 			if err != nil {
@@ -189,8 +213,9 @@ func (m *UDP) run(key flow, session *association, route Route) {
 		case <-received:
 			return
 		case packet := <-session.packets:
-			_, err := conn.Write(packet)
-			m.pendingBytes.Add(-int64(len(packet) + 1))
+			_, err := conn.Write(packet.data)
+			m.pendingBytes.Add(-int64(len(packet.data) + 1))
+			udpBufPool.Put(packet.buf)
 			if err != nil {
 				m.failed.Add(1)
 				return

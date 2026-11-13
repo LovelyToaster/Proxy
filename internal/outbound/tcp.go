@@ -2,6 +2,7 @@ package outbound
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -10,11 +11,18 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"sync"
 	"time"
 
 	"proxy.local/m0/internal/config"
 	"proxy.local/m0/internal/stream"
 )
+
+var httpReaderPool = sync.Pool{
+	New: func() any {
+		return bufio.NewReaderSize(nil, 32<<10)
+	},
+}
 
 func Dial(ctx context.Context, dialer net.Dialer, proxy config.Outbound, target netip.AddrPort, timeout time.Duration) (stream.Conn, error) {
 	if proxy.Type != "direct" && target.Addr().Zone() != "" {
@@ -66,15 +74,30 @@ func httpConnect(conn *net.TCPConn, proxy config.Outbound, target string) (strea
 	if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n%s\r\n", target, target, auth); err != nil {
 		return nil, err
 	}
-	reader := bufio.NewReader(io.LimitReader(conn, 32<<10))
+	reader := httpReaderPool.Get().(*bufio.Reader)
+	reader.Reset(io.LimitReader(conn, 32<<10))
 	response, err := http.ReadResponse(reader, &http.Request{Method: http.MethodConnect})
 	if err != nil {
+		reader.Reset(nil)
+		httpReaderPool.Put(reader)
 		return nil, err
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		reader.Reset(nil)
+		httpReaderPool.Put(reader)
 		return nil, fmt.Errorf("HTTP CONNECT rejected with status %d", response.StatusCode)
 	}
-	return &bufferedConn{TCPConn: conn, reader: io.MultiReader(io.LimitReader(reader, int64(reader.Buffered())), conn)}, nil
+	buffered := reader.Buffered()
+	if buffered == 0 {
+		reader.Reset(nil)
+		httpReaderPool.Put(reader)
+		return conn, nil
+	}
+	extra := make([]byte, buffered)
+	_, _ = io.ReadFull(reader, extra)
+	reader.Reset(nil)
+	httpReaderPool.Put(reader)
+	return &bufferedConn{TCPConn: conn, reader: io.MultiReader(bytes.NewReader(extra), conn)}, nil
 }
 
 type bufferedConn struct {

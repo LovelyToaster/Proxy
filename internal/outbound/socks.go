@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/netip"
 	"strings"
+	"sync"
 	"time"
 
 	"proxy.local/m0/internal/config"
@@ -190,12 +191,24 @@ func (s *socksUDP) Close() error {
 	return errors.Join(s.Conn.Close(), s.control.Close())
 }
 
+var socksUDPBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 65535)
+		return &b
+	},
+}
+
 func (s *socksUDP) Write(payload []byte) (int, error) {
 	if len(payload)+len(s.header) > 65507 {
 		return 0, errors.New("SOCKS5 UDP datagram too large")
 	}
-	packet := append(make([]byte, 0, len(payload)+len(s.header)), s.header...)
-	if _, err := s.Conn.Write(append(packet, payload...)); err != nil {
+	bufPtr := socksUDPBufPool.Get().(*[]byte)
+	buf := *bufPtr
+	n := copy(buf, s.header)
+	n += copy(buf[n:], payload)
+	_, err := s.Conn.Write(buf[:n])
+	socksUDPBufPool.Put(bufPtr)
+	if err != nil {
 		return 0, err
 	}
 	return len(payload), nil
@@ -203,8 +216,11 @@ func (s *socksUDP) Write(payload []byte) (int, error) {
 
 func (s *socksUDP) Read(p []byte) (int, error) {
 	wire := p
+	var bufPtr *[]byte
 	if len(wire) < 65535 {
-		wire = make([]byte, 65535)
+		bufPtr = socksUDPBufPool.Get().(*[]byte)
+		wire = *bufPtr
+		defer socksUDPBufPool.Put(bufPtr)
 	}
 	for {
 		n, err := s.Conn.Read(wire)
