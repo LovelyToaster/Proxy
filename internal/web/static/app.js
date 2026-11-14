@@ -30,8 +30,8 @@ function applyTheme() {
   else if (currentTheme === 'dark' && darkBtn) darkBtn.classList.add('active');
   else if (currentTheme === 'auto' && autoBtn) autoBtn.classList.add('active');
 
-  if (lastOverviewData && lastOverviewData.dns_stats) {
-    renderDNSPieChart(lastOverviewData.dns_stats);
+  if (hasLoadedOnce && lastOverviewData && lastOverviewData.dns_stats) {
+    renderDNSPieChart(lastOverviewData.dns_stats, true);
   }
 }
 
@@ -85,7 +85,7 @@ function switchTab(tab) {
     overviewNav.classList.add('active');
     logsNav.classList.remove('active');
     pageTitle.innerText = '系统总览';
-    fetchOverviewData();
+    fetchOverviewData(true);
   } else {
     overviewView.classList.add('hidden');
     logsView.classList.remove('hidden');
@@ -100,22 +100,75 @@ function switchTab(tab) {
   }
 }
 
+function formatDuration(str) {
+  if (!str) return '0秒';
+  if (str.includes('秒') || str.includes('分') || str.includes('小时')) return str;
+  return str.replace(/h/g, '小时').replace(/m/g, '分').replace(/s/g, '秒');
+}
+
 // 总览数据获取与渲染
 let overviewTimer = null;
-async function fetchOverviewData() {
+let overviewInFlight = false;
+let overviewController = null;
+let hasLoadedOnce = false;
+let lastOverviewData = null;
+let lastOutboundSig = '';
+let lastConnsSig = '';
+let lastDNSUpstreamSig = '';
+let lastDNSPieSig = '';
+
+function hideInitialPieSkeleton() {
+  const pieSkeleton = document.getElementById('dns-pie-skeleton');
+  const pieCanvas = document.getElementById('dns-pie-canvas');
+  if (pieSkeleton) pieSkeleton.classList.add('hidden');
+  if (pieCanvas) pieCanvas.classList.remove('hidden');
+}
+
+async function fetchOverviewData(force = false) {
+  if (overviewInFlight && !force) return;
+  if (force && overviewController) {
+    overviewController.abort();
+  }
+
+  overviewInFlight = true;
+  overviewController = new AbortController();
+  const timeoutId = setTimeout(() => {
+    if (overviewController) overviewController.abort();
+  }, 5000);
+
   try {
-    const res = await fetch('/api/overview');
-    if (!res.ok) return;
+    const res = await fetch('/api/overview', { signal: overviewController.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    renderOverview(data);
+    const isFirstLoad = !hasLoadedOnce;
+    hasLoadedOnce = true;
+    hideInitialPieSkeleton();
+    renderOverview(data, isFirstLoad);
   } catch (e) {
-    // 忽略临时网络错误
+    if (e.name !== 'AbortError' && !hasLoadedOnce) {
+      showInitialLoadError();
+    }
+  } finally {
+    clearTimeout(timeoutId);
+    overviewInFlight = false;
   }
 }
 
-let lastOverviewData = null;
+function showInitialLoadError() {
+  const errHtml = '<div style="color: var(--text-muted); font-size: 14px;">数据加载失败，请等待重试或点击右上角“刷新数据”</div>';
+  const outboundList = document.getElementById('outbound-list');
+  const tableBody = document.getElementById('active-conns-body');
+  const dnsUpstreamList = document.getElementById('dns-upstream-list');
+  const legend = document.getElementById('dns-pie-legend');
+  if (outboundList) outboundList.innerHTML = errHtml;
+  if (dnsUpstreamList) dnsUpstreamList.innerHTML = errHtml;
+  if (legend) legend.innerHTML = errHtml;
+  if (tableBody) {
+    tableBody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted); padding: 16px 0;">数据加载失败，请等待重试或点击右上角“刷新数据”</td></tr>';
+  }
+}
 
-function renderOverview(data) {
+function renderOverview(data, forceRender = false) {
   if (!data) return;
   lastOverviewData = data;
 
@@ -136,7 +189,7 @@ function renderOverview(data) {
   const udpDropsElem = document.getElementById('metric-udp-drops');
   if (data.udp_stats) {
     if (udpSessionsElem) udpSessionsElem.innerText = `${data.udp_stats.active || 0} 会话`;
-    let drops = (data.udp_stats.dropped || 0) + (data.udp_stats.kernel_dropped || 0) + (data.udp_stats.capture_dropped || 0);
+    const drops = (data.udp_stats.dropped || 0) + (data.udp_stats.kernel_dropped || 0) + (data.udp_stats.capture_dropped || 0);
     if (udpDropsElem) udpDropsElem.innerText = `丢包计数 ${drops}`;
   }
 
@@ -156,63 +209,64 @@ function renderOverview(data) {
   const outboundFooter = document.getElementById('outbound-footer');
   if (outboundList) {
     const connected = data.connected || {};
-    const keys = Object.keys(connected);
-    // 按数量从高到低排序
-    keys.sort((a, b) => (connected[b] || 0) - (connected[a] || 0));
+    const outboundSig = JSON.stringify(connected);
+    if (forceRender || outboundSig !== lastOutboundSig) {
+      lastOutboundSig = outboundSig;
+      const keys = Object.keys(connected);
+      keys.sort((a, b) => (connected[b] || 0) - (connected[a] || 0));
 
-    let total = 0;
-    keys.forEach(k => { total += connected[k] || 0; });
+      let total = 0;
+      keys.forEach(k => { total += connected[k] || 0; });
 
-    if (keys.length === 0 || total === 0) {
-      outboundList.innerHTML = '<div style="color: var(--text-muted); font-size: 14px;">暂无出站连接数据</div>';
-    } else {
-      outboundList.innerHTML = keys.map(name => {
-        const count = connected[name] || 0;
-        const pct = total > 0 ? Math.round((count / total) * 100) : 0;
-        return `
-          <div class="outbound-item">
-            <div class="outbound-header">
-              <span class="outbound-name">${escapeHtml(name)}</span>
-              <span class="outbound-count">${count.toLocaleString()} 次 (${pct}%)</span>
+      if (keys.length === 0 || total === 0) {
+        outboundList.innerHTML = '<div style="color: var(--text-muted); font-size: 14px;">暂无出站连接数据</div>';
+      } else {
+        outboundList.innerHTML = keys.map(name => {
+          const count = connected[name] || 0;
+          const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+          return `
+            <div class="outbound-item">
+              <div class="outbound-header">
+                <span class="outbound-name">${escapeHtml(name)}</span>
+                <span class="outbound-count">${count.toLocaleString()} 次 (${pct}%)</span>
+              </div>
+              <div class="progress-track">
+                <div class="progress-fill" style="width: ${pct}%;"></div>
+              </div>
             </div>
-            <div class="progress-track">
-              <div class="progress-fill" style="width: ${pct}%;"></div>
-            </div>
-          </div>
+          `;
+        }).join('');
+      }
+
+      if (outboundFooter) {
+        outboundFooter.innerHTML = `
+          <span>出站出口总数：${keys.length}</span>
+          <span>累计总连接：${total.toLocaleString()}</span>
         `;
-      }).join('');
-    }
-
-    if (outboundFooter) {
-      outboundFooter.innerHTML = `
-        <span>出站出口总数：${keys.length}</span>
-        <span>累计总连接：${total.toLocaleString()}</span>
-      `;
+      }
     }
   }
-
-function formatDuration(str) {
-  if (!str) return '0秒';
-  if (str.includes('秒') || str.includes('分') || str.includes('小时')) return str;
-  return str.replace(/h/g, '小时').replace(/m/g, '分').replace(/s/g, '秒');
-}
 
   // 活跃连接列表
   const tableBody = document.getElementById('active-conns-body');
   if (tableBody) {
     const conns = data.active_conns || [];
-    if (conns.length === 0) {
-      tableBody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted); padding: 16px 0;">当前暂无活跃连接</td></tr>';
-    } else {
-      tableBody.innerHTML = conns.map(c => `
-        <tr>
-          <td class="col-id">${c.id}</td>
-          <td class="col-addr" title="${escapeHtml(c.source)}"><span class="cell-text">${escapeHtml(c.source)}</span></td>
-          <td class="col-addr" title="${escapeHtml(c.destination)}"><span class="cell-text">${escapeHtml(c.destination)}</span></td>
-          <td class="col-outbound"><span style="color: var(--primary); font-weight: 500;">${escapeHtml(c.outbound)}</span></td>
-          <td class="col-duration">${escapeHtml(formatDuration(c.duration))}</td>
-        </tr>
-      `).join('');
+    const connsSig = JSON.stringify(conns);
+    if (forceRender || connsSig !== lastConnsSig) {
+      lastConnsSig = connsSig;
+      if (conns.length === 0) {
+        tableBody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted); padding: 16px 0;">当前暂无活跃连接</td></tr>';
+      } else {
+        tableBody.innerHTML = conns.map(c => `
+          <tr>
+            <td class="col-id">${c.id}</td>
+            <td class="col-addr" title="${escapeHtml(c.source)}"><span class="cell-text">${escapeHtml(c.source)}</span></td>
+            <td class="col-addr" title="${escapeHtml(c.destination)}"><span class="cell-text">${escapeHtml(c.destination)}</span></td>
+            <td class="col-outbound"><span style="color: var(--primary); font-weight: 500;">${escapeHtml(c.outbound)}</span></td>
+            <td class="col-duration">${escapeHtml(formatDuration(c.duration))}</td>
+          </tr>
+        `).join('');
+      }
     }
   }
 
@@ -221,49 +275,56 @@ function formatDuration(str) {
   const dnsUpstreamFooter = document.getElementById('dns-upstream-footer');
   if (dnsUpstreamList && data.dns_stats) {
     const upstreams = data.dns_stats.upstream_requests || {};
-    const keys = Object.keys(upstreams);
-    // 按数量从高到低排序
-    keys.sort((a, b) => (upstreams[b] || 0) - (upstreams[a] || 0));
+    const upstreamSig = JSON.stringify(upstreams);
+    if (forceRender || upstreamSig !== lastDNSUpstreamSig) {
+      lastDNSUpstreamSig = upstreamSig;
+      const keys = Object.keys(upstreams);
+      keys.sort((a, b) => (upstreams[b] || 0) - (upstreams[a] || 0));
 
-    let total = 0;
-    keys.forEach(k => { total += upstreams[k] || 0; });
+      let total = 0;
+      keys.forEach(k => { total += upstreams[k] || 0; });
 
-    if (keys.length === 0 || total === 0) {
-      dnsUpstreamList.innerHTML = '<div style="color: var(--text-muted); font-size: 14px;">暂无 DNS 上游请求数据</div>';
-    } else {
-      dnsUpstreamList.innerHTML = keys.map(name => {
-        const count = upstreams[name] || 0;
-        const pct = total > 0 ? Math.round((count / total) * 100) : 0;
-        return `
-          <div class="outbound-item">
-            <div class="outbound-header">
-              <span class="outbound-name">${escapeHtml(name)}</span>
-              <span class="outbound-count">${count.toLocaleString()} 次 (${pct}%)</span>
+      if (keys.length === 0 || total === 0) {
+        dnsUpstreamList.innerHTML = '<div style="color: var(--text-muted); font-size: 14px;">暂无 DNS 上游请求数据</div>';
+      } else {
+        dnsUpstreamList.innerHTML = keys.map(name => {
+          const count = upstreams[name] || 0;
+          const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+          return `
+            <div class="outbound-item">
+              <div class="outbound-header">
+                <span class="outbound-name">${escapeHtml(name)}</span>
+                <span class="outbound-count">${count.toLocaleString()} 次 (${pct}%)</span>
+              </div>
+              <div class="progress-track">
+                <div class="progress-fill-dns" style="width: ${pct}%;"></div>
+              </div>
             </div>
-            <div class="progress-track">
-              <div class="progress-fill-dns" style="width: ${pct}%;"></div>
-            </div>
-          </div>
+          `;
+        }).join('');
+      }
+
+      if (dnsUpstreamFooter) {
+        dnsUpstreamFooter.innerHTML = `
+          <span>上游服务器数：${keys.length}</span>
+          <span>累计总解析请求：${total.toLocaleString()}</span>
         `;
-      }).join('');
-    }
-
-    if (dnsUpstreamFooter) {
-      dnsUpstreamFooter.innerHTML = `
-        <span>上游服务器数：${keys.length}</span>
-        <span>累计总解析请求：${total.toLocaleString()}</span>
-      `;
+      }
     }
   }
 
   // DNS 查询分布饼状图
-  renderDNSPieChart(data.dns_stats);
+  renderDNSPieChart(data.dns_stats, forceRender);
 }
 
-function renderDNSPieChart(dns) {
+function renderDNSPieChart(dns, forceRender = false) {
   const canvas = document.getElementById('dns-pie-canvas');
   const legend = document.getElementById('dns-pie-legend');
   if (!canvas || !legend) return;
+
+  const pieSig = dns ? `${dns.queries || 0}:${dns.stale_hits || 0}:${dns.fresh_hits || 0}:${dns.other_queries || 0}:${dns.failures || 0}` : 'empty';
+  if (!forceRender && pieSig === lastDNSPieSig) return;
+  lastDNSPieSig = pieSig;
 
   if (!dns || !dns.queries || dns.queries === 0) {
     drawEmptyPie(canvas);
@@ -379,14 +440,37 @@ let lastLogID = 0;
 let autoScroll = true;
 let streamActive = true;
 let eventSource = null;
+let pollTimer = null;
+let streamMode = 'idle'; // 'idle' | 'sse' | 'polling'
+let pendingRenderLogs = [];
+let logFlushScheduled = false;
+
+function stopPollLogs() {
+  if (pollTimer !== null) {
+    clearTimeout(pollTimer);
+    pollTimer = null;
+  }
+}
+
+function schedulePollLogs(delayMs) {
+  stopPollLogs();
+  pollTimer = setTimeout(pollLogs, delayMs);
+}
 
 function initLogStream() {
+  stopPollLogs();
   if (eventSource) {
     eventSource.close();
+    eventSource = null;
   }
 
   if (window.EventSource) {
+    streamMode = 'sse';
     eventSource = new EventSource('/api/logs/events');
+    eventSource.onopen = function () {
+      streamMode = 'sse';
+      stopPollLogs();
+    };
     eventSource.onmessage = function (event) {
       if (!streamActive) return;
       try {
@@ -397,17 +481,22 @@ function initLogStream() {
       }
     };
     eventSource.onerror = function () {
-      // 若 SSE 连接失败，采用轮询兜底
-      setTimeout(pollLogs, 2000);
+      if (streamMode !== 'polling') {
+        streamMode = 'polling';
+        schedulePollLogs(2000);
+      }
     };
   } else {
+    streamMode = 'polling';
     pollLogs();
   }
 }
 
 async function pollLogs() {
+  pollTimer = null;
+  if (streamMode !== 'polling') return;
   if (!streamActive) {
-    setTimeout(pollLogs, 1000);
+    schedulePollLogs(1000);
     return;
   }
   try {
@@ -422,7 +511,9 @@ async function pollLogs() {
       }
     }
   } catch (e) {}
-  setTimeout(pollLogs, 1000);
+  if (streamMode === 'polling') {
+    schedulePollLogs(1000);
+  }
 }
 
 function parseLogLevel(text) {
@@ -433,6 +524,37 @@ function parseLogLevel(text) {
   return { level: '信息', cls: 'info' };
 }
 
+function getSearchKey() {
+  return (document.getElementById('log-search')?.value || '').toLowerCase().trim();
+}
+
+function matchesSearch(logItem, searchKey) {
+  if (!searchKey) return true;
+  return logItem.textLower.includes(searchKey) || logItem.level.includes(searchKey);
+}
+
+function buildLogLineElement(l) {
+  const line = document.createElement('div');
+  line.className = 'log-line';
+
+  const timeSpan = document.createElement('span');
+  timeSpan.className = 'log-time';
+  timeSpan.textContent = `[${l.time}]`;
+
+  const levelSpan = document.createElement('span');
+  levelSpan.className = `log-level ${l.cls}`;
+  levelSpan.textContent = `[${l.level}]`;
+
+  const textSpan = document.createElement('span');
+  textSpan.className = 'log-text';
+  textSpan.textContent = l.text;
+
+  line.appendChild(timeSpan);
+  line.appendChild(levelSpan);
+  line.appendChild(textSpan);
+  return line;
+}
+
 function appendLogEntry(entry) {
   if (!entry || !entry.text) return;
   lastLogID = Math.max(lastLogID, entry.id || 0);
@@ -441,45 +563,91 @@ function appendLogEntry(entry) {
   const now = new Date();
   const timeStr = now.toTimeString().split(' ')[0];
 
-  logs.push({
+  const logItem = {
     id: entry.id,
     time: timeStr,
     level: parsed.level,
     cls: parsed.cls,
-    text: entry.text
-  });
+    text: entry.text,
+    textLower: entry.text.toLowerCase()
+  };
 
+  logs.push(logItem);
   if (logs.length > maxLogs) {
     logs.shift();
   }
 
-  renderLogs();
+  pendingRenderLogs.push(logItem);
+  scheduleLogFlush();
 }
 
-function renderLogs() {
+function scheduleLogFlush() {
+  if (logFlushScheduled) return;
+  logFlushScheduled = true;
+  requestAnimationFrame(flushPendingLogs);
+}
+
+function flushPendingLogs() {
+  logFlushScheduled = false;
+  if (pendingRenderLogs.length === 0) return;
+
   const terminal = document.getElementById('log-terminal');
   const countIndicator = document.getElementById('log-count');
   if (!terminal) return;
 
-  const searchKey = (document.getElementById('log-search')?.value || '').toLowerCase().trim();
-  const filtered = logs.filter(l => {
-    if (!searchKey) return true;
-    return l.text.toLowerCase().includes(searchKey) || l.level.includes(searchKey);
-  });
+  const batch = pendingRenderLogs.splice(0, pendingRenderLogs.length);
+  const searchKey = getSearchKey();
+  const frag = document.createDocumentFragment();
+  let added = 0;
 
-  terminal.innerHTML = filtered.map(l => `
-    <div class="log-line">
-      <span class="log-time">[${l.time}]</span>
-      <span class="log-level ${l.cls}">[${l.level}]</span>
-      <span class="log-text">${escapeHtml(l.text)}</span>
-    </div>
-  `).join('');
-
-  if (countIndicator) {
-    countIndicator.innerText = `${filtered.length} 行`;
+  for (let i = 0; i < batch.length; i++) {
+    if (matchesSearch(batch[i], searchKey)) {
+      frag.appendChild(buildLogLineElement(batch[i]));
+      added++;
+    }
   }
 
-  if (autoScroll) {
+  if (added > 0) {
+    terminal.appendChild(frag);
+    while (terminal.childElementCount > maxLogs) {
+      terminal.removeChild(terminal.firstElementChild);
+    }
+  }
+
+  if (countIndicator) {
+    countIndicator.innerText = `${terminal.childElementCount} 行`;
+  }
+
+  if (autoScroll && currentTab === 'logs') {
+    scrollToBottom();
+  }
+}
+
+function renderLogs() {
+  pendingRenderLogs = [];
+  const terminal = document.getElementById('log-terminal');
+  const countIndicator = document.getElementById('log-count');
+  if (!terminal) return;
+
+  const searchKey = getSearchKey();
+  const frag = document.createDocumentFragment();
+  let count = 0;
+
+  for (let i = 0; i < logs.length; i++) {
+    if (matchesSearch(logs[i], searchKey)) {
+      frag.appendChild(buildLogLineElement(logs[i]));
+      count++;
+    }
+  }
+
+  terminal.textContent = '';
+  terminal.appendChild(frag);
+
+  if (countIndicator) {
+    countIndicator.innerText = `${count} 行`;
+  }
+
+  if (autoScroll && currentTab === 'logs') {
     scrollToBottom();
   }
 }
@@ -502,6 +670,7 @@ function filterLogs() {
 
 function clearLogs() {
   logs = [];
+  pendingRenderLogs = [];
   renderLogs();
 }
 
@@ -514,10 +683,12 @@ function toggleStream() {
 function exportLogs() {
   const text = logs.map(l => `[${l.time}] [${l.level}] ${l.text}`).join('\n');
   const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
+  a.href = url;
   a.download = `proxy_logs_${Date.now()}.txt`;
   a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function escapeHtml(str) {
@@ -528,7 +699,7 @@ function escapeHtml(str) {
     .replace(/>/g, '&gt;');
 }
 
-// 终端内部滚动监听
+// 终端内部滚动监听与页面生命周期管理
 document.addEventListener('DOMContentLoaded', () => {
   const terminal = document.getElementById('log-terminal');
   if (terminal) {
@@ -542,6 +713,12 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && currentTab === 'overview') {
+      fetchOverviewData();
+    }
+  });
+
   // 恢复保存的主题
   const saved = localStorage.getItem('proxy_theme');
   if (saved) currentTheme = saved;
@@ -549,6 +726,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 初始加载
   fetchOverviewData();
-  overviewTimer = setInterval(fetchOverviewData, 2000);
+  overviewTimer = setInterval(() => {
+    if (!document.hidden && currentTab === 'overview') {
+      fetchOverviewData();
+    }
+  }, 2000);
   initLogStream();
 });

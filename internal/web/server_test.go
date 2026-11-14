@@ -86,6 +86,9 @@ func TestWebServer(t *testing.T) {
 		if !strings.Contains(rec.Body.String(), "透明代理控制台") {
 			t.Fatalf("unexpected index.html content: %s", rec.Body.String())
 		}
+		if !strings.Contains(rec.Body.String(), "skeleton") {
+			t.Fatalf("expected initial skeleton placeholders in index.html")
+		}
 
 		recCSS := httptest.NewRecorder()
 		reqCSS := httptest.NewRequest(http.MethodGet, "/style.css", nil)
@@ -99,6 +102,22 @@ func TestWebServer(t *testing.T) {
 		handler.ServeHTTP(recJS, reqJS)
 		if recJS.Code != http.StatusOK {
 			t.Fatalf("GET /app.js status = %d", recJS.Code)
+		}
+
+		etag := rec.Header().Get("ETag")
+		if etag == "" {
+			t.Fatal("expected ETag header on /")
+		}
+		if cc := rec.Header().Get("Cache-Control"); cc != "no-cache" {
+			t.Fatalf("expected Cache-Control: no-cache, got %q", cc)
+		}
+
+		rec304 := httptest.NewRecorder()
+		req304 := httptest.NewRequest(http.MethodGet, "/", nil)
+		req304.Header.Set("If-None-Match", etag)
+		handler.ServeHTTP(rec304, req304)
+		if rec304.Code != http.StatusNotModified {
+			t.Fatalf("GET / with matching If-None-Match status = %d, expected 304", rec304.Code)
 		}
 	})
 

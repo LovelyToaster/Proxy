@@ -70,23 +70,23 @@
         <div class="overview-grid">
           <div class="metric-card">
             <div class="metric-label">实际驱动</div>
-            <div id="metric-driver" class="metric-value">WinDivert</div>
-            <div id="metric-scope" class="metric-sub">范围：全局透明接管</div>
+            <div id="metric-driver" class="metric-value"><span class="skeleton skeleton-lg"></span></div>
+            <div id="metric-scope" class="metric-sub"><span class="skeleton skeleton-sm"></span></div>
           </div>
           <div class="metric-card">
             <div class="metric-label">当前 TCP 连接</div>
-            <div id="metric-tcp" class="metric-value">0 个活跃</div>
-            <div id="metric-tcp-sub" class="metric-sub">上限 256</div>
+            <div id="metric-tcp" class="metric-value"><span class="skeleton skeleton-lg"></span></div>
+            <div id="metric-tcp-sub" class="metric-sub"><span class="skeleton skeleton-sm"></span></div>
           </div>
           <div class="metric-card">
             <div class="metric-label">UDP 传输统计</div>
-            <div id="metric-udp-sessions" class="metric-value">0 会话</div>
-            <div id="metric-udp-drops" class="metric-sub">丢包计数 0</div>
+            <div id="metric-udp-sessions" class="metric-value"><span class="skeleton skeleton-lg"></span></div>
+            <div id="metric-udp-drops" class="metric-sub"><span class="skeleton skeleton-sm"></span></div>
           </div>
           <div class="metric-card">
             <div class="metric-label">DNS 缓存记录</div>
-            <div id="metric-dns-cached" class="metric-value">0 条 / 4096 条</div>
-            <div id="metric-dns-sub" class="metric-sub">命中率 0%</div>
+            <div id="metric-dns-cached" class="metric-value"><span class="skeleton skeleton-lg"></span></div>
+            <div id="metric-dns-sub" class="metric-sub"><span class="skeleton skeleton-sm"></span></div>
           </div>
         </div>
 
@@ -96,11 +96,14 @@
           <div class="section-box">
             <div class="section-title">出站分流统计</div>
             <div id="outbound-list" class="section-content-scroll">
-              <div style="color: var(--text-muted); font-size: 14px;">暂无出站连接数据</div>
+              <div class="skeleton skeleton-row"></div>
+              <div class="skeleton skeleton-row skeleton-w80"></div>
+              <div class="skeleton skeleton-row skeleton-w65"></div>
+              <div class="skeleton skeleton-row skeleton-w75"></div>
             </div>
             <div id="outbound-footer" class="section-footer">
-              <span>出站出口总数：0</span>
-              <span>累计总连接：0</span>
+              <span class="skeleton skeleton-sm"></span>
+              <span class="skeleton skeleton-sm"></span>
             </div>
           </div>
 
@@ -119,9 +122,9 @@
                   </tr>
                 </thead>
                 <tbody id="active-conns-body">
-                  <tr>
-                    <td colspan="5" style="text-align: center; color: var(--text-muted); padding: 16px 0;">当前暂无活跃连接</td>
-                  </tr>
+                  <tr><td colspan="5"><div class="skeleton skeleton-row"></div></td></tr>
+                  <tr><td colspan="5"><div class="skeleton skeleton-row skeleton-w80"></div></td></tr>
+                  <tr><td colspan="5"><div class="skeleton skeleton-row skeleton-w75"></div></td></tr>
                 </tbody>
               </table>
             </div>
@@ -131,11 +134,14 @@
           <div class="section-box">
             <div class="section-title">DNS 上游分流统计</div>
             <div id="dns-upstream-list" class="section-content-scroll">
-              <div style="color: var(--text-muted); font-size: 14px;">暂无 DNS 上游请求数据</div>
+              <div class="skeleton skeleton-row"></div>
+              <div class="skeleton skeleton-row skeleton-w80"></div>
+              <div class="skeleton skeleton-row skeleton-w65"></div>
+              <div class="skeleton skeleton-row skeleton-w75"></div>
             </div>
             <div id="dns-upstream-footer" class="section-footer">
-              <span>上游服务器数：0</span>
-              <span>累计总解析请求：0</span>
+              <span class="skeleton skeleton-sm"></span>
+              <span class="skeleton skeleton-sm"></span>
             </div>
           </div>
 
@@ -144,10 +150,14 @@
             <div class="section-title">DNS 查询分布统计</div>
             <div class="pie-wrapper">
               <div class="pie-canvas-box">
-                <canvas id="dns-pie-canvas" width="180" height="180"></canvas>
+                <div id="dns-pie-skeleton" class="skeleton skeleton-ring"></div>
+                <canvas id="dns-pie-canvas" class="hidden" width="180" height="180"></canvas>
               </div>
               <div class="pie-legend" id="dns-pie-legend">
-                <!-- 动态图例项 -->
+                <div class="skeleton skeleton-row"></div>
+                <div class="skeleton skeleton-row skeleton-w80"></div>
+                <div class="skeleton skeleton-row skeleton-w75"></div>
+                <div class="skeleton skeleton-row skeleton-w65"></div>
               </div>
             </div>
           </div>

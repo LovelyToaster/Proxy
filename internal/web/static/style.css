@@ -26,6 +26,8 @@
   --pie-fresh: #10b981;
   --pie-fail: #ef4444;
   --pie-other: #3b82f6;
+  --skeleton-base: #e2e8f0;
+  --skeleton-shine: #f8fafc;
 }
 
 :root.dark {
@@ -55,6 +57,8 @@
   --pie-fresh: #34d399;
   --pie-fail: #f87171;
   --pie-other: #60a5fa;
+  --skeleton-base: #334155;
+  --skeleton-shine: #475569;
 }
 
 * {
@@ -643,6 +647,83 @@ body {
 /* 隐藏与显示辅助类 */
 .hidden {
   display: none !important;
+}
+
+/* 仅首次进入显示的骨架屏加载动画 */
+.skeleton {
+  display: inline-block;
+  border-radius: 4px;
+  vertical-align: middle;
+  background: linear-gradient(90deg, var(--skeleton-base) 25%, var(--skeleton-shine) 50%, var(--skeleton-base) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.25s infinite linear;
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.skeleton-lg {
+  height: 26px;
+  width: 68%;
+}
+
+.skeleton-sm {
+  height: 14px;
+  width: 48%;
+}
+
+.section-footer .skeleton-sm {
+  width: 34%;
+}
+
+.skeleton-row {
+  display: block;
+  height: 18px;
+  width: 100%;
+  margin-bottom: 14px;
+}
+
+.skeleton-w80 {
+  width: 80%;
+}
+
+.skeleton-w75 {
+  width: 75%;
+}
+
+.skeleton-w65 {
+  width: 65%;
+}
+
+.skeleton-ring {
+  width: 158px;
+  height: 158px;
+  border-radius: 50%;
+  background: transparent;
+  border: 26px solid var(--skeleton-base);
+  animation: skeleton-pulse 1.25s infinite ease-in-out;
+}
+
+@keyframes skeleton-pulse {
+  0%, 100% {
+    opacity: 0.65;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton,
+  .skeleton-ring {
+    animation: none !important;
+  }
 }
 
 /* 响应式调整 */
