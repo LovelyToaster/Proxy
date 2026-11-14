@@ -3,7 +3,6 @@ package dnsengine
 import (
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"net/netip"
 	"net/url"
@@ -14,6 +13,7 @@ import (
 	"github.com/miekg/dns"
 	"proxy.local/m0/internal/config"
 	"proxy.local/m0/internal/geosite"
+	"proxy.local/m0/internal/logging"
 	"proxy.local/m0/internal/systemdns"
 )
 
@@ -154,7 +154,7 @@ func (r *infrastructure) netResolver() *net.Resolver {
 					closeUp()
 				}
 			} else {
-				log.Printf("internal DNS resolution stopped: %v", err)
+				logging.Errorf("internal DNS resolution stopped: %v", err)
 			}
 			wire.WriteMsg(answer)
 		}()
