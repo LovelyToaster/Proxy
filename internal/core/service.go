@@ -469,10 +469,13 @@ func (s *state) serveTCP(ctx context.Context, listener capture.Listener, workers
 					return
 				}
 			}
-			upstream, err := outbound.Dial(ctx, dialer, proxy, target, network.ConnectTimeout)
+			upstream, dialedTarget, err := s.dialTCPOutbound(ctx, dialer, name, proxy, target, network)
 			if err != nil {
 				logging.Warnf("TCP dial %s via %s: %v", target, name, err)
 				return
+			}
+			if dialedTarget != target {
+				logging.Debugf("TCP dial %s fell back to %s via %s", target, dialedTarget, name)
 			}
 			defer upstream.Close()
 			stopUpstream := context.AfterFunc(ctx, func() { upstream.Close() })
@@ -485,6 +488,52 @@ func (s *state) serveTCP(ctx context.Context, listener capture.Listener, workers
 			}
 		})
 	}
+}
+
+func (s *state) dialTCPOutbound(
+	ctx context.Context,
+	dialer net.Dialer,
+	routeName string,
+	proxy config.Outbound,
+	target netip.AddrPort,
+	network config.Network,
+) (stream.Conn, netip.AddrPort, error) {
+	if proxy.Type != "direct" || !network.IsIPv6FallbackEnabled() || s.dns == nil {
+		conn, err := outbound.Dial(ctx, dialer, proxy, target, network.ConnectTimeout)
+		return conn, target, err
+	}
+	addr := target.Addr().Unmap()
+	if !addr.IsValid() || !addr.Is6() {
+		conn, err := outbound.Dial(ctx, dialer, proxy, target, network.ConnectTimeout)
+		return conn, target, err
+	}
+
+	deadline := time.Now().Add(network.ConnectTimeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	lookupCtx, cancelLookup := context.WithDeadline(ctx, deadline)
+	candIPs := s.dns.FallbackIPv4s(lookupCtx, addr)
+	cancelLookup()
+
+	var fallbacks []netip.AddrPort
+	if len(candIPs) > 0 {
+		routes := s.snapshot().routes
+		for _, v4 := range candIPs {
+			cand := netip.AddrPortFrom(v4, target.Port())
+			if routes != nil {
+				if candRoute, err := routes.Select(cand, "tcp"); err != nil || candRoute != routeName {
+					continue
+				}
+			}
+			fallbacks = append(fallbacks, cand)
+		}
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return nil, netip.AddrPort{}, context.DeadlineExceeded
+	}
+	return outbound.DialWithFallback(ctx, dialer, proxy, target, fallbacks, network.EffectiveIPv6FallbackDelay(), remaining)
 }
 
 func (s *state) serveIPC(ctx context.Context, listener net.Listener, path string, stop func(), readOnly bool) {
