@@ -567,40 +567,49 @@ func (s *state) handle(ctx context.Context, command, path string) (any, error) {
 
 func (s *state) Overview() (web.OverviewData, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	connected := make(map[string]uint64, len(s.connected))
 	for k, v := range s.connected {
 		connected[k] = v
 	}
-
-	activeConns := make([]web.ActiveConn, 0, len(s.active))
-	now := time.Now()
+	activeSnap := make([]connection, 0, len(s.active))
 	for _, item := range s.active {
-		dur := web.FormatDurationChinese(now.Sub(item.Started))
+		activeSnap = append(activeSnap, item)
+	}
+	generation := s.generation
+	captureCfg := s.cfg.Capture
+	maxTCP := s.cfg.Network.MaxConnections
+	dnsMaxEntries := s.cfg.DNS.Cache.MaxEntries
+	kernelDropsFn := s.kernelUDPDrops
+	captureDropsFn := s.captureUDPDrops
+	dnsEngine := s.dns
+	s.mu.Unlock()
+
+	now := time.Now()
+	activeConns := make([]web.ActiveConn, 0, len(activeSnap))
+	for _, item := range activeSnap {
 		activeConns = append(activeConns, web.ActiveConn{
 			ID:          item.ID,
 			Source:      item.Source,
 			Destination: item.Destination.String(),
 			Outbound:    item.Outbound,
-			Duration:    dur,
+			Duration:    web.FormatDurationChinese(now.Sub(item.Started)),
 		})
 	}
 	sort.Slice(activeConns, func(i, j int) bool { return activeConns[i].ID < activeConns[j].ID })
 
 	udp := s.udp.Stats()
-	if s.kernelUDPDrops != nil {
-		if drops, err := s.kernelUDPDrops(); err == nil {
+	if kernelDropsFn != nil {
+		if drops, err := kernelDropsFn(); err == nil {
 			udp.KernelDropped = &drops
 		}
 	}
-	if s.captureUDPDrops != nil {
-		if drops, err := s.captureUDPDrops(); err == nil {
+	if captureDropsFn != nil {
+		if drops, err := captureDropsFn(); err == nil {
 			udp.CaptureDropped = &drops
 		}
 	}
 
-	driver := s.cfg.Capture.Mode
+	driver := captureCfg.Mode
 	if driver == "" || driver == "off" {
 		driver = "未启用"
 	} else {
@@ -614,9 +623,9 @@ func (s *state) Overview() (web.OverviewData, error) {
 		}
 	}
 
-	dnsOverview := web.DNSOverview{Enabled: s.dns != nil}
-	if s.dns != nil {
-		dnsStat := s.dns.Status()
+	dnsOverview := web.DNSOverview{Enabled: dnsEngine != nil}
+	if dnsEngine != nil {
+		dnsStat := dnsEngine.Status()
 		dnsOverview.Queries = dnsStat.Queries
 		dnsOverview.CacheHits = dnsStat.CacheHits
 		dnsOverview.StaleHits = dnsStat.StaleHits
@@ -630,7 +639,7 @@ func (s *state) Overview() (web.OverviewData, error) {
 		dnsOverview.NegativeNoSOA = dnsStat.NegativeNoSOA
 		dnsOverview.SystemBypass = dnsStat.SystemBypass
 		dnsOverview.Cached = dnsStat.Cached
-		dnsOverview.MaxEntries = s.cfg.DNS.Cache.MaxEntries
+		dnsOverview.MaxEntries = dnsMaxEntries
 		if dnsOverview.MaxEntries == 0 {
 			dnsOverview.MaxEntries = 4096
 		}
@@ -649,10 +658,10 @@ func (s *state) Overview() (web.OverviewData, error) {
 
 	return web.OverviewData{
 		Driver:      driver,
-		Scope:       web.ScopeText(s.cfg.Capture.Scope, s.cfg.Capture.Mode, s.cfg.Capture.IPv4, s.cfg.Capture.IPv6),
-		Generation:  s.generation,
-		ActiveTCP:   len(s.active),
-		MaxTCP:      s.cfg.Network.MaxConnections,
+		Scope:       web.ScopeText(captureCfg.Scope, captureCfg.Mode, captureCfg.IPv4, captureCfg.IPv6),
+		Generation:  generation,
+		ActiveTCP:   len(activeSnap),
+		MaxTCP:      maxTCP,
 		Connected:   connected,
 		ActiveConns: activeConns,
 		UDPStats:    udp,

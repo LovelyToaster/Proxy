@@ -84,6 +84,29 @@ func TestStateWebProvider(t *testing.T) {
 		t.Fatal("expected error when DNS is nil")
 	}
 
+	// Verify drop callbacks run without holding s.mu and concurrent Overview calls remain safe.
+	s.kernelUDPDrops = func() (uint64, error) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return 7, nil
+	}
+	s.captureUDPDrops = func() (uint64, error) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return 3, nil
+	}
+
+	overview, err = s.Overview()
+	if err != nil {
+		t.Fatalf("Overview with drop callbacks failed: %v", err)
+	}
+	if overview.UDPStats.KernelDropped == nil || *overview.UDPStats.KernelDropped != 7 {
+		t.Fatalf("unexpected kernel drops: %+v", overview.UDPStats.KernelDropped)
+	}
+	if overview.UDPStats.CaptureDropped == nil || *overview.UDPStats.CaptureDropped != 3 {
+		t.Fatalf("unexpected capture drops: %+v", overview.UDPStats.CaptureDropped)
+	}
+
 	// Reload should succeed
 	if err := s.Reload(); err != nil {
 		t.Fatalf("Reload failed: %v", err)
