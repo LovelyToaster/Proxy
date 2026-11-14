@@ -543,23 +543,16 @@ function renderLogLevelStatus(status) {
   currentLogLevelStatus = status;
 
   const select = document.getElementById('log-runtime-level');
-  const badge = document.getElementById('log-level-badge');
   const resetBtn = document.getElementById('btn-reset-log-level');
 
   if (select && status.current) {
     select.value = status.current;
   }
-  if (badge) {
-    if (status.temporary) {
-      badge.innerText = `临时覆盖（默认 ${status.configured || 'info'}）`;
-      badge.classList.add('temporary');
-    } else {
-      badge.innerText = '配置默认';
-      badge.classList.remove('temporary');
-    }
-  }
   if (resetBtn) {
     resetBtn.classList.toggle('hidden', !status.temporary);
+    resetBtn.title = status.configured
+      ? `恢复配置文件中的默认日志级别 (${status.configured})`
+      : '恢复配置文件中的默认日志级别';
   }
 }
 
