@@ -562,8 +562,15 @@ body {
   flex-wrap: wrap;
 }
 
+.logs-filters {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .log-search-input {
-  width: 280px;
+  width: 240px;
   padding: 8px 12px;
   border-radius: 6px;
   border: 1px solid var(--border);
@@ -577,10 +584,56 @@ body {
   border-color: var(--border-focus);
 }
 
+.log-select {
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background-color: var(--bg-card);
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+}
+
+.log-select:focus {
+  border-color: var(--border-focus);
+}
+
 .logs-controls {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
+}
+
+.log-level-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 8px;
+  border-right: 1px solid var(--border);
+}
+
+.log-level-caption {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.log-level-badge {
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background-color: var(--bg-card);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.log-level-badge.temporary {
+  color: var(--tag-warn);
+  border-color: var(--tag-warn);
+  background-color: transparent;
+  font-weight: 600;
 }
 
 .checkbox-label {

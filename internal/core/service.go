@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -23,6 +23,7 @@ import (
 	"proxy.local/m0/internal/geodata"
 	"proxy.local/m0/internal/ipc"
 	"proxy.local/m0/internal/logbuffer"
+	"proxy.local/m0/internal/logging"
 	"proxy.local/m0/internal/outbound"
 	"proxy.local/m0/internal/routing"
 	"proxy.local/m0/internal/session"
@@ -107,12 +108,17 @@ func ServeReady(parent context.Context, path, directory string, ready func()) er
 
 func ServeReadyManaged(parent context.Context, path, directory string, ready func(), apply func(bool) error) error {
 	previous := log.Writer()
+	previousOutput := logging.Default.Output()
 	if apply != nil {
-		log.SetOutput(logbuffer.Default)
+		logging.SetOutput(nil)
 	} else {
-		log.SetOutput(io.MultiWriter(previous, logbuffer.Default))
+		logging.SetOutput(previous)
 	}
-	defer log.SetOutput(previous)
+	log.SetOutput(logging.Default.StdBridgeWriter(slog.LevelInfo))
+	defer func() {
+		log.SetOutput(previous)
+		logging.SetOutput(previousOutput)
+	}()
 	path, err := filepath.Abs(path)
 	if err != nil {
 		return err
@@ -125,6 +131,7 @@ func ServeReadyManaged(parent context.Context, path, directory string, ready fun
 	if err != nil {
 		return err
 	}
+	_, _ = logging.SetConfiguredLevel(cfg.Log)
 	if apply != nil {
 		if err := apply(cfg.Service.Autostart); err != nil {
 			return err
@@ -198,10 +205,10 @@ func ServeReadyManaged(parent context.Context, path, directory string, ready fun
 			closeControl()
 			return fmt.Errorf("web dashboard: %w", err)
 		}
-		log.Printf("web dashboard listening on http://%s", webServer.Addr().String())
+		logging.Infof("web dashboard listening on http://%s", webServer.Addr().String())
 		go func() {
 			if err := webServer.Serve(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Printf("web server error: %v", err)
+				logging.Errorf("web server error: %v", err)
 			}
 		}()
 		defer webServer.Close()
@@ -264,7 +271,7 @@ func ServeReadyManaged(parent context.Context, path, directory string, ready fun
 	if status != nil {
 		ipcWorkers.Go(func() { state.serveIPC(ctx, status, path, cancel, true) })
 	}
-	log.Printf("proxyd ready (capture=%s)", cfg.Capture.Mode)
+	logging.Infof("proxyd ready (capture=%s, log=%s)", cfg.Capture.Mode, cfg.Log)
 	if ready != nil {
 		ready()
 	}
@@ -388,6 +395,7 @@ func (s *state) resolveUDP(target netip.AddrPort) (session.Route, error) {
 		name = proxy.UDPFallback
 		proxy = snap.cfg.Outbounds[name]
 	}
+	logging.Debugf("UDP route %s -> %s", target, name)
 	return session.Route{Name: name, Outbound: proxy, Dialer: s.dns.Dialer(capture.Dialer(snap.cfg.Capture)), Network: snap.cfg.Network}, nil
 }
 
@@ -407,7 +415,7 @@ func (s *state) serveTCP(ctx context.Context, listener capture.Listener, workers
 		target, err := listener.Destination(tcp)
 		if err != nil {
 			tcp.Close()
-			log.Printf("TCP destination: %v", err)
+			logging.Warnf("TCP destination: %v", err)
 			continue
 		}
 
@@ -419,7 +427,7 @@ func (s *state) serveTCP(ctx context.Context, listener capture.Listener, workers
 		}
 		if err != nil {
 			tcp.Close()
-			log.Printf("TCP routing: %v", err)
+			logging.Warnf("TCP routing: %v", err)
 			continue
 		}
 		proxy := snap.cfg.Outbounds[name]
@@ -431,6 +439,7 @@ func (s *state) serveTCP(ctx context.Context, listener capture.Listener, workers
 				source = src.String()
 			}
 		}
+		logging.Debugf("TCP accept %s -> %s via %s", source, target, name)
 
 		s.mu.Lock()
 		if len(s.active) >= snap.cfg.Network.MaxConnections {
@@ -456,13 +465,13 @@ func (s *state) serveTCP(ctx context.Context, listener capture.Listener, workers
 				var err error
 				dialer, err = listener.PrepareDialer(tcp, dialer)
 				if err != nil {
-					log.Printf("TCP redirect records: %v", err)
+					logging.Warnf("TCP redirect records: %v", err)
 					return
 				}
 			}
 			upstream, err := outbound.Dial(ctx, dialer, proxy, target, network.ConnectTimeout)
 			if err != nil {
-				log.Printf("TCP dial %s via %s: %v", target, name, err)
+				logging.Warnf("TCP dial %s via %s: %v", target, name, err)
 				return
 			}
 			defer upstream.Close()
@@ -472,7 +481,7 @@ func (s *state) serveTCP(ctx context.Context, listener capture.Listener, workers
 			s.connected[name]++
 			s.mu.Unlock()
 			if err := stream.Relay(tcp, upstream, network.IdleTimeout); err != nil && ctx.Err() == nil {
-				log.Printf("TCP relay %s via %s: %v", target, name, err)
+				logging.Warnf("TCP relay %s via %s: %v", target, name, err)
 			}
 		})
 	}
@@ -662,6 +671,19 @@ func (s *state) Overview() (web.OverviewData, error) {
 
 func (s *state) Logs(after uint64) logbuffer.Snapshot {
 	return logbuffer.Default.Read(after)
+}
+
+func (s *state) LogLevel() logging.LevelStatus {
+	return logging.Status()
+}
+
+func (s *state) SetLogLevel(level string) (logging.LevelStatus, error) {
+	status, err := logging.SetTemporaryLevel(level)
+	if err != nil {
+		return status, err
+	}
+	logging.Infof("log level updated: configured=%s current=%s temporary=%v", status.Configured, status.Current, status.Temporary)
+	return status, nil
 }
 
 func (s *state) FlushDNS() error {
