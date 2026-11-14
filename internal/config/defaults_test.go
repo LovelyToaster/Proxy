@@ -186,3 +186,38 @@ func TestWebConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestLogConfig(t *testing.T) {
+	cfg, _, err := loadText(t, minimalDNS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Log != "info" {
+		t.Fatalf("expected default log level info, got %q", cfg.Log)
+	}
+
+	for _, tc := range []struct {
+		raw  string
+		want string
+	}{
+		{"log: debug\n", "debug"},
+		{"log: DEBUG\n", "debug"},
+		{"log: ' Warn '\n", "warn"},
+		{"log: error\n", "error"},
+		{"log: ''\n", "info"},
+	} {
+		cfg, _, err := loadText(t, tc.raw+minimalDNS)
+		if err != nil {
+			t.Fatalf("valid log config %q failed: %v", tc.raw, err)
+		}
+		if cfg.Log != tc.want {
+			t.Fatalf("log config %q: got %q, want %q", tc.raw, cfg.Log, tc.want)
+		}
+	}
+
+	for _, invalid := range []string{"log: trace\n", "log: fatal\n", "log: invalid\n"} {
+		if _, _, err := loadText(t, invalid+minimalDNS); err == nil {
+			t.Fatalf("expected error for invalid log config %q", invalid)
+		}
+	}
+}

@@ -20,6 +20,7 @@ import (
 
 type Config struct {
 	Version   int                 `yaml:"version"`
+	Log       string              `yaml:"log"`
 	Network   Network             `yaml:"network"`
 	Capture   Capture             `yaml:"capture"`
 	Listeners []Listener          `yaml:"listeners"`
@@ -115,6 +116,7 @@ func Load(path string) (Config, error) {
 	defer file.Close()
 	cfg := Config{
 		Version: 1,
+		Log:     "info",
 		Network: Network{ConnectTimeout: 10 * time.Second, IdleTimeout: 5 * time.Minute, MaxConnections: 256, UDPTimeout: 60 * time.Second, MaxUDPSessions: 256},
 		Capture: Capture{Mode: "off", IPv4: true, IPv6: true, Port: 15080},
 		DNS:     DNS{Listen: []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:15353"), netip.MustParseAddrPort("[::1]:15353")}, Timeout: 4 * time.Second, Cache: DNSCache{Enabled: true, MaxEntries: 4096, Algorithm: "arc", NegativeTTL: 60 * time.Second, Stale: DNSCacheStale{StaleTTL: 24 * time.Hour, ServeTTL: 5 * time.Second}, Persist: DNSCachePersist{File: "data/dns_cache.dat", SyncInterval: time.Hour}}},
@@ -240,6 +242,15 @@ func nativeCaptureMode(c Capture, platform string) (string, error) {
 func (c *Config) validate() error {
 	if c.Version != 1 {
 		return errors.New("version must be 1")
+	}
+	c.Log = strings.ToLower(strings.TrimSpace(c.Log))
+	if c.Log == "" {
+		c.Log = "info"
+	}
+	switch c.Log {
+	case "debug", "info", "warn", "error":
+	default:
+		return fmt.Errorf("invalid log level %q: expected debug, info, warn, or error", c.Log)
 	}
 	if c.Service.StatusGroup != "" && !regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,32}$`).MatchString(c.Service.StatusGroup) {
 		return errors.New("invalid service.status_group")
