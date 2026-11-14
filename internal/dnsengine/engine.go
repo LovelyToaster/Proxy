@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/netip"
 	"os"
@@ -19,6 +18,7 @@ import (
 	"golang.org/x/sync/singleflight"
 	"proxy.local/m0/internal/config"
 	"proxy.local/m0/internal/geosite"
+	"proxy.local/m0/internal/logging"
 	"proxy.local/m0/internal/systemdns"
 )
 
@@ -119,7 +119,7 @@ func New(cfg config.DNS, dialer net.Dialer, outboundSets ...map[string]config.Ou
 		if loaded, err := loadFromFile(cfg.Cache.Persist.File, time.Now(), cacheOpts.stale); err == nil && len(loaded) > 0 {
 			cacheInstance.restore(loaded, time.Now())
 		} else if err != nil && !os.IsNotExist(err) {
-			log.Printf("DNS cache persistence: load failed: %v", err)
+			logging.Warnf("DNS cache persistence: load failed: %v", err)
 		}
 	}
 	e := &Engine{
@@ -234,7 +234,7 @@ func (e *Engine) savePersist() {
 	}
 	snapshots := c.snapshot()
 	if err := saveToFile(persist.File, snapshots); err != nil {
-		log.Printf("DNS cache persistence: save failed: %v", err)
+		logging.Warnf("DNS cache persistence: save failed: %v", err)
 	}
 }
 
@@ -385,11 +385,13 @@ func (e *Engine) answer(query *dns.Msg) *dns.Msg {
 		found, state := cache.get(key, query, time.Now())
 		if state == entryFresh {
 			e.hits.Add(1)
+			logging.Debugf("DNS cache hit %s type=%s policy=%s", question.Name, dns.TypeToString[question.Qtype], policy)
 			return found
 		}
 		if state == entryStale {
 			e.hits.Add(1)
 			e.staleHits.Add(1)
+			logging.Debugf("DNS stale hit %s type=%s policy=%s", question.Name, dns.TypeToString[question.Qtype], policy)
 			e.refreshAsync(policy, key)
 			return found
 		}
@@ -398,12 +400,15 @@ func (e *Engine) answer(query *dns.Msg) *dns.Msg {
 			if err == nil && response.Rcode != dns.RcodeServerFailure && !fallback {
 				e.recordPutReject(cache.put(key, response, time.Now()))
 			}
+			if err == nil {
+				logging.Debugf("DNS resolved %s type=%s policy=%s fallback=%v rcode=%s", question.Name, dns.TypeToString[question.Qtype], policy, fallback, dns.RcodeToString[response.Rcode])
+			}
 			return missResult{response: response, err: err}, nil
 		})
 		res := v.(missResult)
 		if res.err != nil {
 			e.failed.Add(1)
-			log.Printf("DNS upstream %s: %v", policy, res.err)
+			logging.Warnf("DNS upstream %s: %v", policy, res.err)
 			if staleMsg, state := cache.get(key, query, time.Now()); state == entryStale {
 				e.staleHits.Add(1)
 				return staleMsg
@@ -423,12 +428,13 @@ func (e *Engine) answer(query *dns.Msg) *dns.Msg {
 		return out
 	}
 
-	response, _, err := e.exchangeWithFallback(policy, up, fallbackName, fallUp, query)
+	response, fallback, err := e.exchangeWithFallback(policy, up, fallbackName, fallUp, query)
 	if err != nil {
 		e.failed.Add(1)
-		log.Printf("DNS upstream %s: %v", policy, err)
+		logging.Warnf("DNS upstream %s: %v", policy, err)
 		return new(dns.Msg).SetRcode(query, dns.RcodeServerFailure)
 	}
+	logging.Debugf("DNS resolved %s type=%s policy=%s fallback=%v rcode=%s", question.Name, dns.TypeToString[question.Qtype], policy, fallback, dns.RcodeToString[response.Rcode])
 	if response.Rcode == dns.RcodeServerFailure {
 		e.failed.Add(1)
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"proxy.local/m0/internal/logbuffer"
+	"proxy.local/m0/internal/logging"
 	"proxy.local/m0/internal/session"
 )
 
@@ -61,6 +63,8 @@ type OverviewData struct {
 type Provider interface {
 	Overview() (OverviewData, error)
 	Logs(after uint64) logbuffer.Snapshot
+	LogLevel() logging.LevelStatus
+	SetLogLevel(level string) (logging.LevelStatus, error)
 	FlushDNS() error
 	Reload() error
 }
@@ -92,6 +96,7 @@ func New(listen string, provider Provider) (*Server, error) {
 	mux.HandleFunc("/api/overview", s.handleOverview)
 	mux.HandleFunc("/api/logs", s.handleLogs)
 	mux.HandleFunc("/api/logs/events", s.handleLogsEvents)
+	mux.HandleFunc("/api/logs/level", s.handleLogLevel)
 	mux.HandleFunc("/api/dns/flush", s.handleDNSFlush)
 	mux.HandleFunc("/api/reload", s.handleReload)
 
@@ -212,6 +217,31 @@ func (s *Server) handleLogsEvents(w http.ResponseWriter, r *http.Request) {
 				flusher.Flush()
 			}
 		}
+	}
+}
+
+func (s *Server) handleLogLevel(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(s.provider.LogLevel())
+	case http.MethodPost:
+		var req struct {
+			Level string `json:"level"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		status, err := s.provider.SetLogLevel(req.Level)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(status)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 

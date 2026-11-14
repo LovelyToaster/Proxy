@@ -92,6 +92,7 @@ function switchTab(tab) {
     logsNav.classList.add('active');
     overviewNav.classList.remove('active');
     pageTitle.innerText = '实时日志';
+    fetchLogLevel();
     scrollToBottom();
   }
 
@@ -425,6 +426,7 @@ async function reloadConfig() {
     if (res.ok) {
       alert('配置重新加载成功');
       fetchOverviewData();
+      fetchLogLevel();
     } else {
       alert('配置重新加载失败');
     }
@@ -516,21 +518,99 @@ async function pollLogs() {
   }
 }
 
-function parseLogLevel(text) {
-  const upper = text.toUpperCase();
-  if (upper.includes('ERROR') || upper.includes('FAIL')) return { level: '错误', cls: 'error' };
-  if (upper.includes('WARN')) return { level: '警告', cls: 'warn' };
-  if (upper.includes('DEBUG')) return { level: '调试', cls: 'debug' };
-  return { level: '信息', cls: 'info' };
+const LOG_LEVELS = {
+  debug: { level: '调试', cls: 'debug', rank: 0 },
+  info: { level: '信息', cls: 'info', rank: 1 },
+  warn: { level: '警告', cls: 'warn', rank: 2 },
+  error: { level: '错误', cls: 'error', rank: 3 }
+};
+
+let currentLogLevelStatus = { configured: 'info', current: 'info', temporary: false };
+
+async function fetchLogLevel() {
+  try {
+    const res = await fetch('/api/logs/level');
+    if (!res.ok) return;
+    const status = await res.json();
+    renderLogLevelStatus(status);
+  } catch (e) {
+    // 忽略临时网络错误
+  }
 }
 
-function getSearchKey() {
-  return (document.getElementById('log-search')?.value || '').toLowerCase().trim();
+function renderLogLevelStatus(status) {
+  if (!status) return;
+  currentLogLevelStatus = status;
+
+  const select = document.getElementById('log-runtime-level');
+  const badge = document.getElementById('log-level-badge');
+  const resetBtn = document.getElementById('btn-reset-log-level');
+
+  if (select && status.current) {
+    select.value = status.current;
+  }
+  if (badge) {
+    if (status.temporary) {
+      badge.innerText = `临时覆盖（默认 ${status.configured || 'info'}）`;
+      badge.classList.add('temporary');
+    } else {
+      badge.innerText = '配置默认';
+      badge.classList.remove('temporary');
+    }
+  }
+  if (resetBtn) {
+    resetBtn.classList.toggle('hidden', !status.temporary);
+  }
 }
 
-function matchesSearch(logItem, searchKey) {
-  if (!searchKey) return true;
-  return logItem.textLower.includes(searchKey) || logItem.level.includes(searchKey);
+async function changeRuntimeLogLevel(level) {
+  const select = document.getElementById('log-runtime-level');
+  try {
+    const res = await fetch('/api/logs/level', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ level })
+    });
+    if (!res.ok) {
+      const msg = await res.text();
+      alert('切换日志级别失败：' + (msg || res.statusText));
+      if (select) select.value = currentLogLevelStatus.current || 'info';
+      return;
+    }
+    const status = await res.json();
+    renderLogLevelStatus(status);
+  } catch (e) {
+    alert('请求失败：' + e.message);
+    if (select) select.value = currentLogLevelStatus.current || 'info';
+  }
+}
+
+async function resetRuntimeLogLevel() {
+  await changeRuntimeLogLevel('reset');
+}
+
+function parseLogLevel(text, explicitLevel) {
+  const key = (explicitLevel || '').toLowerCase().trim();
+  if (LOG_LEVELS[key]) return LOG_LEVELS[key];
+
+  const upper = (text || '').toUpperCase();
+  if (upper.includes('ERROR') || upper.includes('FAIL')) return LOG_LEVELS.error;
+  if (upper.includes('WARN')) return LOG_LEVELS.warn;
+  if (upper.includes('DEBUG')) return LOG_LEVELS.debug;
+  return LOG_LEVELS.info;
+}
+
+function getFilterState() {
+  const searchKey = (document.getElementById('log-search')?.value || '').toLowerCase().trim();
+  const filterValue = document.getElementById('log-level-filter')?.value || 'all';
+  const minRank = LOG_LEVELS[filterValue] ? LOG_LEVELS[filterValue].rank : 0;
+  return { searchKey, filterValue, minRank };
+}
+
+function matchesFilter(logItem, filter) {
+  if (filter.filterValue !== 'all' && logItem.rank < filter.minRank) return false;
+  if (!filter.searchKey) return true;
+  return logItem.textLower.includes(filter.searchKey) || logItem.level.includes(filter.searchKey);
 }
 
 function buildLogLineElement(l) {
@@ -559,15 +639,15 @@ function appendLogEntry(entry) {
   if (!entry || !entry.text) return;
   lastLogID = Math.max(lastLogID, entry.id || 0);
 
-  const parsed = parseLogLevel(entry.text);
-  const now = new Date();
-  const timeStr = now.toTimeString().split(' ')[0];
+  const parsed = parseLogLevel(entry.text, entry.level);
+  const timeStr = entry.time || new Date().toTimeString().split(' ')[0];
 
   const logItem = {
     id: entry.id,
     time: timeStr,
     level: parsed.level,
     cls: parsed.cls,
+    rank: parsed.rank,
     text: entry.text,
     textLower: entry.text.toLowerCase()
   };
@@ -596,12 +676,12 @@ function flushPendingLogs() {
   if (!terminal) return;
 
   const batch = pendingRenderLogs.splice(0, pendingRenderLogs.length);
-  const searchKey = getSearchKey();
+  const filter = getFilterState();
   const frag = document.createDocumentFragment();
   let added = 0;
 
   for (let i = 0; i < batch.length; i++) {
-    if (matchesSearch(batch[i], searchKey)) {
+    if (matchesFilter(batch[i], filter)) {
       frag.appendChild(buildLogLineElement(batch[i]));
       added++;
     }
@@ -629,12 +709,12 @@ function renderLogs() {
   const countIndicator = document.getElementById('log-count');
   if (!terminal) return;
 
-  const searchKey = getSearchKey();
+  const filter = getFilterState();
   const frag = document.createDocumentFragment();
   let count = 0;
 
   for (let i = 0; i < logs.length; i++) {
-    if (matchesSearch(logs[i], searchKey)) {
+    if (matchesFilter(logs[i], filter)) {
       frag.appendChild(buildLogLineElement(logs[i]));
       count++;
     }
@@ -726,6 +806,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 初始加载
   fetchOverviewData();
+  fetchLogLevel();
   overviewTimer = setInterval(() => {
     if (!document.hidden && currentTab === 'overview') {
       fetchOverviewData();

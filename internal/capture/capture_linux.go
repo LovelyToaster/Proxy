@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
@@ -19,6 +19,7 @@ import (
 
 	"proxy.local/m0/internal/config"
 	"proxy.local/m0/internal/linuxsocket"
+	"proxy.local/m0/internal/logging"
 )
 
 const (
@@ -171,7 +172,7 @@ func startLinux(c config.Capture, directory string, resolver *net.Resolver, upst
 	}
 	command := exec.Command(executable, "--capture-guard", directory)
 	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	command.Stderr = os.Stderr
+	command.Stderr = logging.Default.StdBridgeWriter(slog.LevelInfo)
 	in, err := command.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -271,7 +272,7 @@ func RunGuard(directory string) (result error) {
 		return err
 	}
 	for _, group := range groups {
-		log.Printf("local upstream bypass: %s", group.Path)
+		logging.Infof("local upstream bypass: %s", group.Path)
 	}
 	state, err := tools.prepare(cfg, directory, groups)
 	if err != nil {
@@ -330,7 +331,7 @@ func RunGuard(directory string) (result error) {
 				}
 				groups = next
 				for _, group := range groups {
-					log.Printf("local upstream bypass refreshed: %s", group.Path)
+					logging.Infof("local upstream bypass refreshed: %s", group.Path)
 				}
 			}
 		}

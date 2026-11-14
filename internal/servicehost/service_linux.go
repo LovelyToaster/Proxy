@@ -3,7 +3,6 @@ package servicehost
 import (
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"proxy.local/m0/internal/core"
+	"proxy.local/m0/internal/logging"
 )
 
 func Run(parent context.Context, path, runtime string) error {
@@ -41,13 +41,13 @@ func notifyLifecycle(ctx context.Context, socket string) {
 	notify := func(text string) {
 		conn, err := net.DialUnix("unixgram", nil, &net.UnixAddr{Name: socket, Net: "unixgram"})
 		if err != nil {
-			log.Printf("systemd notification: %v", err)
+			logging.Warnf("systemd notification: %v", err)
 			return
 		}
 		defer conn.Close()
 		conn.SetWriteDeadline(time.Now().Add(time.Second))
 		if _, err := conn.Write([]byte(text)); err != nil {
-			log.Printf("systemd notification: %v", err)
+			logging.Warnf("systemd notification: %v", err)
 		}
 	}
 	notify("READY=1")

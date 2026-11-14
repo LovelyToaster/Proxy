@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"errors"
-	"log"
 	"reflect"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 	"proxy.local/m0/internal/dnsengine"
 	"proxy.local/m0/internal/geodata"
 	"proxy.local/m0/internal/geosite"
+	"proxy.local/m0/internal/logging"
 	"proxy.local/m0/internal/routing"
 )
 
@@ -40,7 +40,10 @@ func (s *state) reload(path string) (uint64, error) {
 			return 0, err
 		}
 	}
-	return s.publish(cfg, routes, dns, s.geo), nil
+	generation := s.publish(cfg, routes, dns, s.geo)
+	_, _ = logging.SetConfiguredLevel(cfg.Log)
+	logging.Infof("configuration reloaded (generation=%d, log=%s)", generation, cfg.Log)
+	return generation, nil
 }
 
 func (s *state) prepare(cfg config.Config, manifest geodata.Manifest) (*routing.Table, *dnsengine.Engine, error) {
@@ -153,7 +156,7 @@ func (s *state) autoGeo(ctx context.Context) {
 			}
 		case <-deadline:
 			if _, err := s.updateGeo(ctx); err != nil && ctx.Err() == nil {
-				log.Printf("geo update: %v", err)
+				logging.Warnf("geo update: %v", err)
 			}
 		}
 	}

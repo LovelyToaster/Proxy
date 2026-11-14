@@ -167,8 +167,28 @@
       <!-- 视图 2：日志 -->
       <section id="view-logs" class="logs-view hidden">
         <div class="logs-toolbar">
-          <input type="text" id="log-search" class="log-search-input" placeholder="按关键词过滤日志..." oninput="filterLogs()">
+          <div class="logs-filters">
+            <input type="text" id="log-search" class="log-search-input" placeholder="按关键词过滤日志..." oninput="filterLogs()">
+            <select id="log-level-filter" class="log-select" onchange="filterLogs()" title="按级别筛选已加载日志">
+              <option value="all">显示：全部级别</option>
+              <option value="debug">显示：调试及以上</option>
+              <option value="info">显示：信息及以上</option>
+              <option value="warn">显示：警告及以上</option>
+              <option value="error">显示：仅错误</option>
+            </select>
+          </div>
           <div class="logs-controls">
+            <div class="log-level-control">
+              <span class="log-level-caption">运行级别</span>
+              <select id="log-runtime-level" class="log-select" onchange="changeRuntimeLogLevel(this.value)" title="临时切换后端日志输出级别（仅当前运行期生效）">
+                <option value="debug">调试 (debug)</option>
+                <option value="info">信息 (info)</option>
+                <option value="warn">警告 (warn)</option>
+                <option value="error">错误 (error)</option>
+              </select>
+              <span id="log-level-badge" class="log-level-badge">配置默认</span>
+              <button id="btn-reset-log-level" class="action-btn hidden" onclick="resetRuntimeLogLevel()" title="恢复配置文件中的默认日志级别">恢复默认</button>
+            </div>
             <label class="checkbox-label">
               <input type="checkbox" id="auto-scroll-toggle" checked onchange="toggleAutoScroll(this.checked)">
               <span>自动滚动</span>

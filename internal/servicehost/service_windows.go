@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -14,6 +13,7 @@ import (
 	"golang.org/x/sys/windows/svc/mgr"
 	"proxy.local/m0/internal/config"
 	"proxy.local/m0/internal/core"
+	"proxy.local/m0/internal/logging"
 )
 
 const serviceName = "ProxyD"
@@ -82,7 +82,7 @@ func (h handler) Execute(_ []string, requests <-chan svc.ChangeRequest, status c
 			}
 		case err := <-done:
 			if err != nil && !(ctx.Err() != nil && errors.Is(err, context.Canceled)) {
-				log.Printf("Windows service: %v", err)
+				logging.Errorf("Windows service: %v", err)
 				return true, 1
 			}
 			return false, 0

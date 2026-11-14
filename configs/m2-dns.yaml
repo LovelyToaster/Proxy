@@ -1,4 +1,5 @@
 version: 1
+log: info
 capture:
   mode: off
 outbounds:

@@ -9,6 +9,7 @@ import (
 
 	"proxy.local/m0/internal/config"
 	"proxy.local/m0/internal/geodata"
+	"proxy.local/m0/internal/logging"
 	"proxy.local/m0/internal/routing"
 	"proxy.local/m0/internal/session"
 )
@@ -107,11 +108,25 @@ func TestStateWebProvider(t *testing.T) {
 		t.Fatalf("unexpected capture drops: %+v", overview.UDPStats.CaptureDropped)
 	}
 
-	// Reload should succeed
+	// Reload should succeed and apply configured log level
+	_, _ = logging.SetConfiguredLevel(cfg.Log)
+	t.Cleanup(func() { _, _ = logging.SetConfiguredLevel("info") })
+
+	status, err := s.SetLogLevel("debug")
+	if err != nil || status.Current != "debug" || !status.Temporary {
+		t.Fatalf("unexpected temporary log status: %+v %v", status, err)
+	}
+
+	if err := os.WriteFile(path, []byte("log: warn\n"+base), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.Reload(); err != nil {
 		t.Fatalf("Reload failed: %v", err)
 	}
 	if s.generation != 2 {
 		t.Fatalf("expected generation 2, got %d", s.generation)
+	}
+	if got := s.LogLevel(); got.Configured != "warn" || got.Current != "warn" || got.Temporary {
+		t.Fatalf("expected reload to reset temporary log level to warn, got %+v", got)
 	}
 }

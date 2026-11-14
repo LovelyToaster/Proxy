@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"proxy.local/m0/internal/logbuffer"
+	"proxy.local/m0/internal/logging"
 	"proxy.local/m0/internal/session"
 )
 
@@ -18,6 +19,7 @@ type mockProvider struct {
 	flushErr  error
 	reloadErr error
 	logsBuf   *logbuffer.Buffer
+	logger    *logging.Logger
 }
 
 func (m *mockProvider) Overview() (OverviewData, error) {
@@ -29,6 +31,20 @@ func (m *mockProvider) Logs(after uint64) logbuffer.Snapshot {
 		return m.logsBuf.Read(after)
 	}
 	return logbuffer.Snapshot{Next: 0, Entries: []logbuffer.Entry{}}
+}
+
+func (m *mockProvider) LogLevel() logging.LevelStatus {
+	if m.logger != nil {
+		return m.logger.Status()
+	}
+	return logging.LevelStatus{Configured: "info", Current: "info", Temporary: false}
+}
+
+func (m *mockProvider) SetLogLevel(level string) (logging.LevelStatus, error) {
+	if m.logger != nil {
+		return m.logger.SetTemporaryLevel(level)
+	}
+	return logging.LevelStatus{Configured: "info", Current: "info", Temporary: false}, nil
 }
 
 func (m *mockProvider) FlushDNS() error {
@@ -58,6 +74,7 @@ func TestWebServer(t *testing.T) {
 			DNSStats: DNSOverview{Enabled: true, Queries: 200, CacheHits: 150, Cached: 40, HitRate: "75%"},
 		},
 		logsBuf: buf,
+		logger:  logging.New(nil, buf),
 	}
 
 	server, err := New("127.0.0.1:0", mock)
@@ -88,6 +105,9 @@ func TestWebServer(t *testing.T) {
 		}
 		if !strings.Contains(rec.Body.String(), "skeleton") {
 			t.Fatalf("expected initial skeleton placeholders in index.html")
+		}
+		if !strings.Contains(rec.Body.String(), "log-runtime-level") || !strings.Contains(rec.Body.String(), "btn-reset-log-level") {
+			t.Fatalf("expected runtime log level controls in index.html")
 		}
 
 		recCSS := httptest.NewRecorder()
@@ -185,6 +205,63 @@ func TestWebServer(t *testing.T) {
 		output := rec.Body.String()
 		if !strings.Contains(output, "data:") {
 			t.Fatalf("expected SSE data format, got %q", output)
+		}
+	})
+
+	// 6. 测试日志级别查询与临时切换 API
+	t.Run("LogLevelAPI", func(t *testing.T) {
+		recGet := httptest.NewRecorder()
+		reqGet := httptest.NewRequest(http.MethodGet, "/api/logs/level", nil)
+		handler.ServeHTTP(recGet, reqGet)
+		if recGet.Code != http.StatusOK {
+			t.Fatalf("GET /api/logs/level status = %d", recGet.Code)
+		}
+		var status logging.LevelStatus
+		if err := json.Unmarshal(recGet.Body.Bytes(), &status); err != nil {
+			t.Fatal(err)
+		}
+		if status.Configured != "info" || status.Current != "info" || status.Temporary {
+			t.Fatalf("unexpected initial log level status: %+v", status)
+		}
+
+		recPost := httptest.NewRecorder()
+		reqPost := httptest.NewRequest(http.MethodPost, "/api/logs/level", strings.NewReader(`{"level":"debug"}`))
+		handler.ServeHTTP(recPost, reqPost)
+		if recPost.Code != http.StatusOK {
+			t.Fatalf("POST /api/logs/level status = %d: %s", recPost.Code, recPost.Body.String())
+		}
+		if err := json.Unmarshal(recPost.Body.Bytes(), &status); err != nil {
+			t.Fatal(err)
+		}
+		if status.Current != "debug" || !status.Temporary {
+			t.Fatalf("expected temporary debug status, got %+v", status)
+		}
+
+		recReset := httptest.NewRecorder()
+		reqReset := httptest.NewRequest(http.MethodPost, "/api/logs/level", strings.NewReader(`{"level":"reset"}`))
+		handler.ServeHTTP(recReset, reqReset)
+		if recReset.Code != http.StatusOK {
+			t.Fatalf("POST reset status = %d", recReset.Code)
+		}
+		if err := json.Unmarshal(recReset.Body.Bytes(), &status); err != nil {
+			t.Fatal(err)
+		}
+		if status.Current != "info" || status.Temporary {
+			t.Fatalf("expected reset to info, got %+v", status)
+		}
+
+		recBad := httptest.NewRecorder()
+		reqBad := httptest.NewRequest(http.MethodPost, "/api/logs/level", strings.NewReader(`{"level":"trace"}`))
+		handler.ServeHTTP(recBad, reqBad)
+		if recBad.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for invalid level, got %d", recBad.Code)
+		}
+
+		recMethod := httptest.NewRecorder()
+		reqMethod := httptest.NewRequest(http.MethodDelete, "/api/logs/level", nil)
+		handler.ServeHTTP(recMethod, reqMethod)
+		if recMethod.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("expected 405 for DELETE, got %d", recMethod.Code)
 		}
 	})
 }

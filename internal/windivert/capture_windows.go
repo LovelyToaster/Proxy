@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/netip"
 	"os"
@@ -17,6 +16,7 @@ import (
 
 	"golang.org/x/sys/windows"
 	"proxy.local/m0/internal/config"
+	"proxy.local/m0/internal/logging"
 	"proxy.local/m0/internal/selfsocket"
 )
 
@@ -319,7 +319,7 @@ func (g *Capture) runHandle(handle uintptr, done chan struct{}, closePackets boo
 						counter, _ := g.unknownHeaders.LoadOrStore(byte(unknown), new(atomic.Uint64))
 						count := counter.(*atomic.Uint64).Add(1)
 						if count == 1 || count&(count-1) == 0 {
-							log.Printf("WinDivert unsupported IPv6 next-header=%d dropped=%d", unknown, count)
+							logging.Warnf("WinDivert unsupported IPv6 next-header=%d dropped=%d", unknown, count)
 						}
 						g.packetDrops.Add(1)
 						continue
