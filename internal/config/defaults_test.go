@@ -221,3 +221,43 @@ func TestLogConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestIPv6FallbackConfig(t *testing.T) {
+	cfg, _, err := loadText(t, minimalDNS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Network.IsIPv6FallbackEnabled() || cfg.Network.IPv6FallbackDelay != DefaultIPv6FallbackDelay || cfg.Network.EffectiveIPv6FallbackDelay() != DefaultIPv6FallbackDelay {
+		t.Fatalf("unexpected ipv6 fallback defaults: enabled=%v delay=%v", cfg.Network.IsIPv6FallbackEnabled(), cfg.Network.IPv6FallbackDelay)
+	}
+
+	custom := "network:\n  connect_timeout: 5s\n  ipv6_fallback: true\n  ipv6_fallback_delay: 250ms\n" + minimalDNS
+	cfg, _, err = loadText(t, custom)
+	if err != nil {
+		t.Fatalf("valid ipv6 fallback config failed: %v", err)
+	}
+	if !cfg.Network.IsIPv6FallbackEnabled() || cfg.Network.IPv6FallbackDelay != 250*time.Millisecond {
+		t.Fatalf("unexpected ipv6 fallback override: enabled=%v delay=%v", cfg.Network.IsIPv6FallbackEnabled(), cfg.Network.IPv6FallbackDelay)
+	}
+
+	disabled := "network:\n  connect_timeout: 200ms\n  ipv6_fallback: false\n  ipv6_fallback_delay: 300ms\n" + minimalDNS
+	cfg, _, err = loadText(t, disabled)
+	if err != nil {
+		t.Fatalf("disabled ipv6 fallback should allow larger delay: %v", err)
+	}
+	if cfg.Network.IsIPv6FallbackEnabled() {
+		t.Fatal("expected ipv6 fallback to be disabled")
+	}
+
+	for _, invalid := range []string{
+		"network:\n  ipv6_fallback_delay: -10ms\n",
+		"network:\n  ipv6_fallback: false\n  ipv6_fallback_delay: -1ms\n",
+		"network:\n  ipv6_fallback_delay: 0s\n",
+		"network:\n  connect_timeout: 5s\n  ipv6_fallback_delay: 5s\n",
+		"network:\n  connect_timeout: 5s\n  ipv6_fallback_delay: 6s\n",
+	} {
+		if _, _, err := loadText(t, invalid+minimalDNS); err == nil {
+			t.Fatalf("expected validation error for %q", invalid)
+		}
+	}
+}

@@ -42,12 +42,30 @@ type Service struct {
 	StatusGroup string `yaml:"status_group"`
 }
 
+const DefaultIPv6FallbackDelay = 300 * time.Millisecond
+
 type Network struct {
-	ConnectTimeout time.Duration `yaml:"connect_timeout"`
-	IdleTimeout    time.Duration `yaml:"idle_timeout"`
-	MaxConnections int           `yaml:"max_connections"`
-	UDPTimeout     time.Duration `yaml:"udp_timeout"`
-	MaxUDPSessions int           `yaml:"max_udp_sessions"`
+	ConnectTimeout    time.Duration `yaml:"connect_timeout"`
+	IdleTimeout       time.Duration `yaml:"idle_timeout"`
+	MaxConnections    int           `yaml:"max_connections"`
+	UDPTimeout        time.Duration `yaml:"udp_timeout"`
+	MaxUDPSessions    int           `yaml:"max_udp_sessions"`
+	IPv6Fallback      *bool         `yaml:"ipv6_fallback"`
+	IPv6FallbackDelay time.Duration `yaml:"ipv6_fallback_delay"`
+}
+
+func (n Network) IsIPv6FallbackEnabled() bool {
+	if n.IPv6Fallback == nil {
+		return true
+	}
+	return *n.IPv6Fallback
+}
+
+func (n Network) EffectiveIPv6FallbackDelay() time.Duration {
+	if n.IPv6FallbackDelay <= 0 {
+		return DefaultIPv6FallbackDelay
+	}
+	return n.IPv6FallbackDelay
 }
 
 type Capture struct {
@@ -117,7 +135,7 @@ func Load(path string) (Config, error) {
 	cfg := Config{
 		Version: 1,
 		Log:     "info",
-		Network: Network{ConnectTimeout: 10 * time.Second, IdleTimeout: 5 * time.Minute, MaxConnections: 256, UDPTimeout: 60 * time.Second, MaxUDPSessions: 256},
+		Network: Network{ConnectTimeout: 10 * time.Second, IdleTimeout: 5 * time.Minute, MaxConnections: 256, UDPTimeout: 60 * time.Second, MaxUDPSessions: 256, IPv6FallbackDelay: DefaultIPv6FallbackDelay},
 		Capture: Capture{Mode: "off", IPv4: true, IPv6: true, Port: 15080},
 		DNS:     DNS{Listen: []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:15353"), netip.MustParseAddrPort("[::1]:15353")}, Timeout: 4 * time.Second, Cache: DNSCache{Enabled: true, MaxEntries: 4096, Algorithm: "arc", NegativeTTL: 60 * time.Second, Stale: DNSCacheStale{StaleTTL: 24 * time.Hour, ServeTTL: 5 * time.Second}, Persist: DNSCachePersist{File: "data/dns_cache.dat", SyncInterval: time.Hour}}},
 	}
@@ -261,6 +279,12 @@ func (c *Config) validate() error {
 	}
 	if c.Network.UDPTimeout <= 0 || c.Network.UDPTimeout > 24*time.Hour || c.Network.MaxUDPSessions < 1 || c.Network.MaxUDPSessions > 1024 {
 		return errors.New("invalid UDP timeout or session limit")
+	}
+	if c.Network.IPv6FallbackDelay < 0 {
+		return errors.New("invalid network ipv6_fallback_delay")
+	}
+	if c.Network.IsIPv6FallbackEnabled() && (c.Network.IPv6FallbackDelay <= 0 || c.Network.IPv6FallbackDelay >= c.Network.ConnectTimeout) {
+		return errors.New("invalid network ipv6_fallback_delay: must be > 0 and < connect_timeout")
 	}
 	if err := ValidateCapture(c.Capture); err != nil {
 		return err
