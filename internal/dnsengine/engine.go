@@ -39,6 +39,8 @@ type Engine struct {
 	persistDone          chan struct{}
 	refreshGroup         singleflight.Group
 	missGroup            singleflight.Group
+	fallbackLookupGroup  singleflight.Group
+	fallbackMap          *fallbackRegistry
 	workers              chan struct{}
 	queries              atomic.Uint64
 	hits                 atomic.Uint64
@@ -125,7 +127,7 @@ func New(cfg config.DNS, dialer net.Dialer, outboundSets ...map[string]config.Ou
 	e := &Engine{
 		listen: cfg.Listen, upstreams: make(map[string]upstream.Upstream), rules: cfg.Rules,
 		compiled: compileRules(cfg.Rules, matchers),
-		matchers: matchers, fallback: cfg.Fallback, cache: cacheInstance, workers: make(chan struct{}, 128),
+		matchers: matchers, fallback: cfg.Fallback, cache: cacheInstance, fallbackMap: newFallbackRegistry(fallbackMapCapacity), workers: make(chan struct{}, 128),
 		cachePersist: cfg.Cache.Persist,
 	}
 	e.startPersistLocked()
@@ -352,6 +354,14 @@ func (e *Engine) exchangeWithFallback(policy string, up upstream.Upstream, fallb
 }
 
 func (e *Engine) answer(query *dns.Msg) *dns.Msg {
+	resp := e.answerCore(query)
+	if e.fallbackMap != nil && resp != nil && resp.Rcode == dns.RcodeSuccess && len(query.Question) == 1 {
+		e.fallbackMap.record(query.Question[0].Name, resp.Answer, time.Now())
+	}
+	return resp
+}
+
+func (e *Engine) answerCore(query *dns.Msg) *dns.Msg {
 	if query.Opcode != dns.OpcodeQuery {
 		return new(dns.Msg).SetRcode(query, dns.RcodeNotImplemented)
 	}
@@ -510,6 +520,9 @@ func (e *Engine) Replace(next *Engine) {
 	e.upstreams, e.bootstrap, e.rules, e.compiled, e.matchers, e.fallback, e.cache = next.upstreams, next.bootstrap, next.rules, next.compiled, next.matchers, next.fallback, next.cache
 	e.infrastructure = next.infrastructure
 	e.cachePersist = next.cachePersist
+	if e.fallbackMap != nil {
+		e.fallbackMap.clear()
+	}
 	e.startPersistLocked()
 	e.policyMu.Unlock()
 	e.persistMu.Unlock()
