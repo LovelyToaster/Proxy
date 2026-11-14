@@ -37,7 +37,7 @@ Proxy 是用于 Linux 与 Windows 的透明代理与网络转发工具，支持 
 - 流量接管：支持 TCP 与 UDP 双栈捕获（可指定 CIDR 和端口范围），支持 53 端口 DNS 劫持。提供全局模式（`scope: global`）、网关模式（`scope: gateway`）与 Windows 单应用模式（`scope: application`），全局模式下 Windows 与 Linux 统一旁路内网/保留地址（含 IPv6 ULA）并豁免非目标 53 端口流量。
 - 本地上游防回环：Linux 通过 cgroup v2 与 `ss --cgroup` 识别本地 SOCKS5/HTTP 上游服务或 Docker 容器并豁免其出站；Windows 根据监听端点 PID 过滤放行，支持 `exclude_applications` 进程路径白名单。
 - DNS 引擎：支持 `udp`、`tcp`、`doh`、`doh3`、`dot`、`doq` 与 `system` 上游。支持 `domain`、`domain_suffix` 与 `geosite` 规则分流。包含配置期与运行期依赖循环检测；内置 ARC/LRU 缓存、Serve-Stale 过期可用、冷未命中 SingleFlight 并发合并、`negative_ttl` 负缓存兜底、`system` 上游签名隔离缓存及本地持久化。
-- 出站与路由：出站支持 `direct`、`socks5`（含 UDP ASSOCIATE）与 `http`。路由规则支持按 `cidr`、`geoip`、`port` 与 `network` 匹配。
+- 出站与路由：出站支持 `direct`、`socks5`（含 UDP ASSOCIATE）与 `http`。路由规则支持按 `cidr`、`geoip`、`port` 与 `network` 匹配；`direct` 直连 TCP 默认启用连接级 IPv6→IPv4 Happy Eyeballs 错峰竞速回退（结合内置 DNS 关联与按需 `A` 记录补查，并发起路由一致性校验）。
 - 运维与状态：支持配置热重载（`proxy reload`），进程退出时自动清理路由与防火墙规则，支持分级日志（`debug` / `info` / `warn` / `error`）、内置内存日志缓冲区（`proxy logs -f`）与可选 Web 控制台（`web.enabled`，支持临时切换运行级别）。
 
 ## 工作原理
@@ -213,6 +213,9 @@ dns:
 |---|---|---|
 | `version` | `1` | 配置版本号 |
 | `log` | `info` | 日志输出级别：`debug`、`info`、`warn` 或 `error`（不区分大小写） |
+| `network.connect_timeout` | `10s` | 出站 TCP 建连超时时间 |
+| `network.ipv6_fallback` | `true` | 是否为 `direct` TCP 出站启用 IPv6→IPv4 Happy Eyeballs 连接级回退 |
+| `network.ipv6_fallback_delay` | `300ms` | 发起 IPv6 连接后触发同域名 IPv4 竞速拨号的错峰等待时间（开启回退时需大于 `0` 且小于 `connect_timeout`） |
 | `capture.scope` | `off` | 接管范围：`global`、`application`、`gateway` 或 `off` |
 | `capture.ipv4` / `ipv6` | `true` / `true` | 是否启用对应协议族的接管 |
 | `capture.port` | `15080` | 内核重定向的目标监听端口 |
