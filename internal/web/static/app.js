@@ -665,7 +665,6 @@ function flushPendingLogs() {
   if (pendingRenderLogs.length === 0) return;
 
   const terminal = document.getElementById('log-terminal');
-  const countIndicator = document.getElementById('log-count');
   if (!terminal) return;
 
   const batch = pendingRenderLogs.splice(0, pendingRenderLogs.length);
@@ -687,10 +686,6 @@ function flushPendingLogs() {
     }
   }
 
-  if (countIndicator) {
-    countIndicator.innerText = `${terminal.childElementCount} 行`;
-  }
-
   if (autoScroll && currentTab === 'logs') {
     scrollToBottom();
   }
@@ -699,26 +694,19 @@ function flushPendingLogs() {
 function renderLogs() {
   pendingRenderLogs = [];
   const terminal = document.getElementById('log-terminal');
-  const countIndicator = document.getElementById('log-count');
   if (!terminal) return;
 
   const filter = getFilterState();
   const frag = document.createDocumentFragment();
-  let count = 0;
 
   for (let i = 0; i < logs.length; i++) {
     if (matchesFilter(logs[i], filter)) {
       frag.appendChild(buildLogLineElement(logs[i]));
-      count++;
     }
   }
 
   terminal.textContent = '';
   terminal.appendChild(frag);
-
-  if (countIndicator) {
-    countIndicator.innerText = `${count} 行`;
-  }
 
   if (autoScroll && currentTab === 'logs') {
     scrollToBottom();
