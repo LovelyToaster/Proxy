@@ -41,6 +41,10 @@ Use Go's `testing` package with adjacent `*_test.go` files and `TestXxx` functio
 
 This checkout has no Git metadata, so existing commit conventions cannot be verified. Use concise imperative subjects, optionally prefixed with `feat:`, `fix:`, or `docs:`. Pull requests should explain the behavior change, link relevant issues, list tested operating systems and commands, and distinguish build checks from live capture acceptance.
 
+## Documentation & README Maintenance
+
+After completing any task, evaluate whether `README.md` needs to be updated. Whenever user-facing behavior, configuration keys or defaults, CLI commands/flags, Web UI features, or build/test workflows change, update `README.md` before finishing so documentation stays aligned with the codebase.
+
 ## Security & Configuration
 
 Never commit proxy credentials or private endpoints. Test capture changes in isolated namespaces or scoped application scenarios first. Preserve precise rule cleanup, upstream bypass, and loop-prevention behavior; global capture affects host networking.
