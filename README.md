@@ -38,7 +38,7 @@ Proxy 是用于 Linux 与 Windows 的透明代理与网络转发工具，支持 
 - 本地上游防回环：Linux 通过 cgroup v2 与 `ss --cgroup` 识别本地 SOCKS5/HTTP 上游服务或 Docker 容器并豁免其出站；Windows 根据监听端点 PID 过滤放行，支持 `exclude_applications` 进程路径白名单。
 - DNS 引擎：支持 `udp`、`tcp`、`doh`、`doh3`、`dot`、`doq` 与 `system` 上游。支持 `domain`、`domain_suffix` 与 `geosite` 规则分流。包含配置期与运行期依赖循环检测；内置 ARC/LRU 缓存、Serve-Stale 过期可用、冷未命中 SingleFlight 并发合并、`negative_ttl` 负缓存兜底、`system` 上游签名隔离缓存及本地持久化。
 - 出站与路由：出站支持 `direct`、`socks5`（含 UDP ASSOCIATE）与 `http`。路由规则支持按 `cidr`、`geoip`、`port` 与 `network` 匹配。
-- 运维与状态：支持配置热重载（`proxy reload`），进程退出时自动清理路由与防火墙规则，内置内存日志缓冲区（`proxy logs -f`）与可选 Web 控制台（`web.enabled`）。
+- 运维与状态：支持配置热重载（`proxy reload`），进程退出时自动清理路由与防火墙规则，支持分级日志（`debug` / `info` / `warn` / `error`）、内置内存日志缓冲区（`proxy logs -f`）与可选 Web 控制台（`web.enabled`，支持临时切换运行级别）。
 
 ## 工作原理
 
@@ -147,6 +147,7 @@ Remove-Item Env:GOOS, Env:GOARCH
 
 ```yaml
 version: 1
+log: info
 
 capture:
   scope: global
@@ -211,6 +212,7 @@ dns:
 | 配置项 | 默认值 | 说明 |
 |---|---|---|
 | `version` | `1` | 配置版本号 |
+| `log` | `info` | 日志输出级别：`debug`、`info`、`warn` 或 `error`（不区分大小写） |
 | `capture.scope` | `off` | 接管范围：`global`、`application`、`gateway` 或 `off` |
 | `capture.ipv4` / `ipv6` | `true` / `true` | 是否启用对应协议族的接管 |
 | `capture.port` | `15080` | 内核重定向的目标监听端口 |
@@ -280,7 +282,8 @@ dns:
 在配置文件中启用 `web.enabled: true`（或指定 `web.listen`）后，可通过浏览器访问控制台（默认 `http://127.0.0.1:9100`）：
 - 实时查看当前驱动/模式、活动连接（含还原后的真实源地址）与 UDP 会话统计；
 - 查看 DNS 命中率、缓存条目数、各上游请求分布及细分未命中原因（`uncacheable_queries`、`uncacheable_responses`、`negative_no_soa`、`system_bypass`）；
-- 查看滚动内存日志，并支持一键触发配置重载（Reload）或清空 DNS 缓存（Flush）。
+- 查看分级滚动内存日志（支持关键词搜索与按级别筛选），并支持在页面中**临时切换运行期日志级别**（如临时开启 `debug` 排查 TCP/UDP 分流与 DNS 解析路径）；临时调整仅在当前运行期生效，不回写配置文件，点击“恢复默认”、执行重载配置（`Reload`）或重启服务后将自动恢复为配置默认级别；
+- 支持一键触发配置重载（Reload）或清空 DNS 缓存（Flush）。
 
 ## 系统服务
 
