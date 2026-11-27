@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -38,16 +39,103 @@ func ownedTools() (tools, error) {
 }
 
 type journal struct {
-	Namespace   string
-	HostAllowed bool
-	Table       string
-	IPv4        bool
-	IPv6        bool
+	Namespace    string
+	HostAllowed  bool
+	Table        string
+	RulePriority string `json:",omitempty"`
+	IPv4         bool
+	IPv6         bool
+}
+
+func (j journal) priority() string {
+	if j.RulePriority != "" {
+		return j.RulePriority
+	}
+	return rulePriority
 }
 
 const journalName = "capture.json"
 const routeProtocol = "99"
 const localRouteType = "2" // RTN_LOCAL in ip -N JSON output.
+const localRouteTable = "255"
+
+func parseRulePriority(raw any) (int, bool) {
+	switch v := raw.(type) {
+	case float64:
+		n := int(v)
+		if float64(n) != v || n < 0 {
+			return 0, false
+		}
+		return n, true
+	case int:
+		if v < 0 {
+			return 0, false
+		}
+		return v, true
+	case string:
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return 0, false
+		}
+		return n, true
+	default:
+		return 0, false
+	}
+}
+
+func validRulePriority(value string) bool {
+	n, err := strconv.Atoi(value)
+	return err == nil && n > 0
+}
+
+func isLocalPolicyRule(rule map[string]any) bool {
+	table := fmt.Sprint(rule["table"])
+	return table == "local" || table == localRouteTable
+}
+
+func selectRulePriority(ruleSets ...[]map[string]any) (string, error) {
+	defaultPriority, err := strconv.Atoi(rulePriority)
+	if err != nil {
+		return "", err
+	}
+	used := map[int]bool{}
+	maxLocal := 0
+	minNonLocal := -1
+
+	for _, rules := range ruleSets {
+		for _, rule := range rules {
+			if fmt.Sprint(rule["table"]) == routeTable || rule["fwmark"] != nil {
+				return "", errors.New("policy routing conflicts with the M1 gateway capture")
+			}
+			priority, ok := parseRulePriority(rule["priority"])
+			if !ok {
+				return "", fmt.Errorf("invalid policy rule priority %v", rule["priority"])
+			}
+			used[priority] = true
+			if isLocalPolicyRule(rule) {
+				if priority > maxLocal {
+					maxLocal = priority
+				}
+				continue
+			}
+			if minNonLocal == -1 || priority < minNonLocal {
+				minNonLocal = priority
+			}
+		}
+	}
+
+	candidate := defaultPriority
+	if minNonLocal != -1 && minNonLocal <= candidate {
+		candidate = minNonLocal - 1
+	}
+	for candidate > maxLocal && used[candidate] {
+		candidate--
+	}
+	if candidate <= maxLocal || candidate < 1 {
+		return "", errors.New("policy routing conflicts with capture: no available rule priority before existing routing rules")
+	}
+	return strconv.Itoa(candidate), nil
+}
 
 func captureLock(namespace string) (*os.File, error) {
 	identifier := strings.TrimSuffix(strings.TrimPrefix(namespace, "net:["), "]")
@@ -100,16 +188,13 @@ func (t tools) prepare(cfg config.Capture, directory string, upstreams ...[]upst
 	state := journal{Namespace: cfg.Namespace, HostAllowed: cfg.Scope == "global", Table: "proxy_m1_" + hex.EncodeToString(id)}
 	{
 		state.IPv4, state.IPv6 = cfg.IPv4, cfg.IPv6
+		var ruleSets [][]map[string]any
 		for _, family := range enabledFamilies(cfg) {
 			rules, err := t.list(family, "rule")
 			if err != nil {
 				return journal{}, err
 			}
-			for _, rule := range rules {
-				if fmt.Sprint(rule["priority"]) == rulePriority || fmt.Sprint(rule["table"]) == routeTable || rule["fwmark"] != nil {
-					return journal{}, errors.New("policy routing conflicts with the M1 gateway capture")
-				}
-			}
+			ruleSets = append(ruleSets, rules)
 			routes, err := t.list(family, "route")
 			if err != nil {
 				return journal{}, err
@@ -120,6 +205,11 @@ func (t tools) prepare(cfg config.Capture, directory string, upstreams ...[]upst
 				}
 			}
 		}
+		priority, err := selectRulePriority(ruleSets...)
+		if err != nil {
+			return journal{}, err
+		}
+		state.RulePriority = priority
 	}
 	if _, err := command(t.nft, nftRules(state.Table, cfg, upstreams...), "-c", "-f", "-"); err != nil {
 		return journal{}, err
@@ -143,16 +233,17 @@ func routeArgs(family, verb string) []string {
 	}
 	return []string{family, "route", verb, "local", address, "dev", "lo", "table", routeTable, "proto", routeProtocol}
 }
-func ruleArgs(family, verb string) []string {
-	return []string{family, "rule", verb, "priority", rulePriority, "fwmark", captureMark + "/" + mask, "lookup", routeTable}
+func ruleArgs(family, verb, priority string) []string {
+	return []string{family, "rule", verb, "priority", priority, "fwmark", captureMark + "/" + mask, "lookup", routeTable}
 }
 
 func (t tools) activate(state journal, cfg config.Capture, upstreams ...[]upstreamGroup) error {
+	priority := state.priority()
 	for _, family := range enabledFamilies(config.Capture{IPv4: state.IPv4, IPv6: state.IPv6}) {
 		if _, err := command(t.ip, "", routeArgs(family, "add")...); err != nil {
 			return err
 		}
-		if _, err := command(t.ip, "", ruleArgs(family, "add")...); err != nil {
+		if _, err := command(t.ip, "", ruleArgs(family, "add", priority)...); err != nil {
 			return err
 		}
 	}
@@ -184,13 +275,14 @@ func (t tools) cleanup(state journal, directory string) error {
 	}
 
 	var cleanupErr error
+	priority := state.priority()
 	for _, family := range enabledFamilies(config.Capture{IPv4: state.IPv4, IPv6: state.IPv6}) {
 		rules, err := t.list(family, "rule")
 		cleanupErr = errors.Join(cleanupErr, err)
 		for _, rule := range rules {
-			if fmt.Sprint(rule["priority"]) == rulePriority && fmt.Sprint(rule["table"]) == routeTable &&
+			if fmt.Sprint(rule["priority"]) == priority && fmt.Sprint(rule["table"]) == routeTable &&
 				rule["fwmark"] == captureMark && rule["fwmask"] == mask {
-				_, err := command(t.ip, "", ruleArgs(family, "del")...)
+				_, err := command(t.ip, "", ruleArgs(family, "del", priority)...)
 				cleanupErr = errors.Join(cleanupErr, err)
 			}
 		}
@@ -227,6 +319,9 @@ func Cleanup(directory string) error {
 	}
 	if !tableName.MatchString(state.Table) {
 		return errors.New("invalid owned table name")
+	}
+	if state.RulePriority != "" && !validRulePriority(state.RulePriority) {
+		return errors.New("invalid owned rule priority")
 	}
 	if err := checkNamespace(state.Namespace, state.HostAllowed); err != nil {
 		return err

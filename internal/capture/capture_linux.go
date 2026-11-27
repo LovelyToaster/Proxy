@@ -278,6 +278,9 @@ func RunGuard(directory string) (result error) {
 	if err != nil {
 		return err
 	}
+	if state.priority() != rulePriority {
+		logging.Infof("capture policy rule priority: %s", state.priority())
+	}
 	defer func() { result = errors.Join(result, tools.cleanup(state, directory)) }()
 	if err := tools.activate(state, cfg, groups); err != nil {
 		return err
