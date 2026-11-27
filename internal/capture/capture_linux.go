@@ -126,7 +126,7 @@ func scopeAllows(c config.Capture, target netip.AddrPort, network string) bool {
 }
 
 func Dialer(c config.Capture) net.Dialer {
-	if c.Mode == "off" {
+	if c.Mode == "" || c.Mode == "off" {
 		return net.Dialer{}
 	}
 	return linuxsocket.MarkedDialer(bypassMark)

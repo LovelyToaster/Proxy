@@ -34,7 +34,8 @@ func TestGeoUpdateReplacesAndDeletesOldData(t *testing.T) {
 	}))
 	defer upstream.Close()
 	cfg := config.Config{
-		Geo: config.Geo{GeoSite: config.DataSource{URL: upstream.URL}},
+		Capture: config.Capture{Mode: "off"},
+		Geo:     config.Geo{GeoSite: config.DataSource{URL: upstream.URL}},
 		DNS: config.DNS{Enabled: true, Timeout: time.Second, Rules: []config.DNSRule{{Upstream: "dns"}},
 			Upstreams: map[string]config.DNSUpstream{"dns": {Type: "udp", Address: "127.0.0.1:53530"}}},
 	}
