@@ -20,6 +20,7 @@ Proxy 是用于 Linux 与 Windows 的透明代理与网络转发工具，支持 
   - [字段参考与默认值](#字段参考与默认值)
 - [命令行（CLI）参考](#命令行cli参考)
   - [管理命令](#管理命令)
+  - [软件内自动更新与发布工作流](#软件内自动更新与发布工作流)
   - [状态与监控](#状态与监控)
   - [DNS 与 Geo 数据库](#dns-与-geo-数据库)
   - [接管状态与抓包](#接管状态与抓包)
@@ -235,6 +236,11 @@ dns:
 | `dns.cache.persist.sync_interval` | `1h` | 后台定期落盘间隔（`0s` 仅在退出/重载时保存） |
 | `routing.geoip_db` | `data/geoip.dat` | GeoIP 数据文件路径（相对于配置文件目录） |
 | `dns.geosite_file` | `data/geosite.dat`| GeoSite 数据文件路径（相对于配置文件目录） |
+| `geo.geoip.url` | `Loyalsoldier/v2ray-rules-dat` 最新 `geoip.dat` | `proxy geo update` 默认拉取的 GeoIP 数据源，可在配置中覆盖 |
+| `geo.geosite.url` | `Loyalsoldier/v2ray-rules-dat` 最新 `geosite.dat` | `proxy geo update` 默认拉取的 GeoSite 数据源，可在配置中覆盖 |
+| `update.repo` | `LovelyToaster/Proxy` | `proxy update` 默认检查的 GitHub 仓库（`owner/repo`） |
+| `update.base_url` | 空（使用 GitHub Releases） | 可选自定义镜像/发布根地址（仅允许 HTTPS 或本地回环 HTTP） |
+| `update.channel` | `stable` | 默认更新通道：`stable` 或 `prerelease` |
 | `web.enabled` | `false` | 是否启用内置 Web 状态控制台 |
 | `web.listen` | `127.0.0.1:9100` | Web 控制台监听地址（启用 `web.enabled` 时默认） |
 
@@ -252,7 +258,33 @@ dns:
 | `proxy restart`| 无 | 重启后台服务 |
 | `proxy reload` | 无 | 重载分流规则与 DNS 策略 |
 | `proxy config check` | `--config <path>` | 检查配置文件语法与依赖关系 |
-| `proxy version`| 无 | 打印版本信息 |
+| `proxy update` | `--check` `--version <tag>` `--force` `--prerelease` `--base-url <url>` `--json` | 自动检查并更新软件、Windows WinDivert 驱动及缺失的内置 Geo 数据 |
+| `proxy version`| `--json` | 打印版本信息（`--json` 包含构建 Commit、平台及 Windows 驱动摘要） |
+
+### 软件内自动更新与发布工作流
+
+1. **一键软件内更新（Windows & Linux）**：
+   ```sh
+   # 自动检查并更新到最新正式版（含 Windows WinDivert 驱动与服务自动恢复）
+   proxy update
+
+   # 仅检查新版本与驱动变更（不修改本地文件）
+   proxy update --check --json
+
+   # 强制重新下载并覆盖软件与驱动 / 指定版本
+   proxy update --force
+   proxy update --version v0.2.0
+   ```
+   - **不断网更新流程**：`proxy update` 先在现有代理服务保持运行期间完成下载、SHA-256 双重校验（对照 `checksums.txt` 与 `release-manifest.json`）、安全解压与新二进制 `version`/`config check` 预检，全部通过后再停服替换。
+   - **Windows 行为**：若 `ProxyD` 正在运行则自动停止；仅当 `WinDivert.dll` / `WinDivert64.sys` 哈希发生变化、缺失或指定 `--force` 时，自动通过 SCM 停止并卸载 `WinDivert` 驱动再替换文件；替换完成后同步卸载注册表 `DisplayVersion` 并自动恢复 `ProxyD`，失败自动回滚。
+   - **Linux 行为**：若检测到当前程序通过 `.deb` 安装（`dpkg -S` 归属 `proxy`），自动下载校验对应 `.deb` 并执行 `dpkg -i` 升级；否则走 `.tar.gz` 原子替换并重启 `proxyd.service`，失败自动回滚（Linux 内核内置 TPROXY/nftables，无需独立驱动文件）。
+
+2. **Git 发布工作流（GitHub Actions）**：
+   - 推送代码至 `master` 或提交 Pull Request 会自动触发 `.github/workflows/ci.yml`（运行 Windows/Linux 双平台 `go vet`、`go test` 与多架构交叉编译）。
+   - 推送语义化版本标签（如 `git tag v0.2.0 && git push origin v0.2.0`）或在 Actions 页面手动触发 `.github/workflows/release.yml` 时，流水线会自动拉取并强校验 `platform/windows/windivert.json` 指定的官方 WinDivert 驱动与 `Loyalsoldier/v2ray-rules-dat` 的最新 `geoip.dat` / `geosite.dat`，统一打包发布：
+     - Windows x64：`Proxy-Setup-<version>-x64.exe`（NSIS 安装包）、`proxy-windows-amd64.zip`
+     - Linux amd64 / arm64：`proxy_<version>_{amd64,arm64}.deb`、`proxy-linux-{amd64,arm64}.tar.gz`
+     - 通用校验元数据：`checksums.txt`、`release-manifest.json`
 
 ### 状态与监控
 
