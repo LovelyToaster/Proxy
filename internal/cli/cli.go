@@ -16,6 +16,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/spf13/cobra"
+	"proxy.local/m0/internal/buildinfo"
 	"proxy.local/m0/internal/capture"
 	"proxy.local/m0/internal/config"
 	"proxy.local/m0/internal/core"
@@ -23,10 +24,12 @@ import (
 	"proxy.local/m0/internal/ipc"
 	"proxy.local/m0/internal/logbuffer"
 	"proxy.local/m0/internal/servicehost"
+	"proxy.local/m0/internal/updater"
 	"proxy.local/m0/internal/windivert"
 )
 
 func Run(args []string, out io.Writer) error {
+	updater.CleanupStaleBackups("")
 	service := false
 	if len(args) > 0 && args[0] == "--service-run" {
 		service = true
@@ -155,7 +158,24 @@ func Run(args []string, out io.Writer) error {
 			return nil
 		}})
 		root.AddCommand(configCmd)
-		root.AddCommand(&cobra.Command{Use: "version", Args: cobra.NoArgs, Run: func(cmd *cobra.Command, _ []string) { fmt.Fprintln(cmd.OutOrStdout(), core.Version) }})
+		var versionJSON bool
+		versionCmd := &cobra.Command{
+			Use:  "version",
+			Args: cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				info := buildinfo.Current()
+				if !versionJSON {
+					fmt.Fprintln(cmd.OutOrStdout(), info.Version)
+					return nil
+				}
+				encoder := json.NewEncoder(cmd.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(info)
+			},
+		}
+		versionCmd.Flags().BoolVar(&versionJSON, "json", false, "emit version metadata as JSON")
+		root.AddCommand(versionCmd)
+		root.AddCommand(newUpdateCommand(&configPath))
 		root.AddCommand(&cobra.Command{Use: "capture-cleanup", Short: "Remove owned stale capture in the same namespace", Args: cobra.NoArgs,
 			RunE: func(*cobra.Command, []string) error { return capture.Cleanup(directory) }})
 		request := func(label, command string) *cobra.Command {

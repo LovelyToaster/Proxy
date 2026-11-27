@@ -2,11 +2,14 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"proxy.local/m0/internal/buildinfo"
 )
 
 func TestUserConfigurationDefaultAndOverride(t *testing.T) {
@@ -77,5 +80,27 @@ func TestDefaultConfigPathByPlatform(t *testing.T) {
 	// sudo's private HOME must never become the service configuration path.
 	if got := defaultConfigPath("linux", "/root", func(string) bool { t.Fatal("Linux probed HOME"); return true }); got != "/etc/proxy/proxy.yaml" {
 		t.Fatal(got)
+	}
+}
+
+func TestVersionCommand(t *testing.T) {
+	var out bytes.Buffer
+	if err := Run([]string{"version"}, &out); err != nil {
+		t.Fatalf("proxy version failed: %v", err)
+	}
+	if strings.TrimSpace(out.String()) != buildinfo.Version {
+		t.Fatalf("unexpected version text: %q", out.String())
+	}
+
+	out.Reset()
+	if err := Run([]string{"version", "--json"}, &out); err != nil {
+		t.Fatalf("proxy version --json failed: %v", err)
+	}
+	var info buildinfo.Info
+	if err := json.Unmarshal(out.Bytes(), &info); err != nil {
+		t.Fatalf("invalid version json: %v (%s)", err, out.String())
+	}
+	if info.Version != buildinfo.Version || info.GOOS != runtime.GOOS || info.GOARCH != runtime.GOARCH {
+		t.Fatalf("unexpected version json payload: %+v", info)
 	}
 }
