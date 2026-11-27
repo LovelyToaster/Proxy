@@ -38,11 +38,12 @@ func (f *tcpFlow) touch(nowUnixNano int64) {
 }
 
 type udpFlow struct {
-	key      flowKey
-	cookie   uint64
-	template []byte
-	address  [10]uint64
-	seen     time.Time
+	source     netip.AddrPort
+	lastTarget netip.AddrPort
+	cookie     uint64
+	template   []byte
+	address    [10]uint64
+	seen       time.Time
 }
 type datagram struct {
 	buf          *[]byte
@@ -67,7 +68,7 @@ type Capture struct {
 	errMu              sync.Mutex
 	tcp                map[flowKey]*tcpFlow
 	reverse            map[netip.AddrPort]*tcpFlow
-	udp                map[flowKey]*udpFlow
+	udp                map[netip.AddrPort]*udpFlow
 	tokens             map[uint64]*udpFlow
 	next               uint64
 	packets            chan datagram
@@ -153,7 +154,7 @@ func StartCaptureResolved(c config.Capture, resolver *net.Resolver, upstreamSets
 	lib.tuneHandle(handle)
 	lib.tuneHandle(replyHandle)
 	g := &Capture{lib: lib, handle: handle, replyHandle: replyHandle, config: c, tcp: make(map[flowKey]*tcpFlow), reverse: make(map[netip.AddrPort]*tcpFlow),
-		udp: make(map[flowKey]*udpFlow), tokens: make(map[uint64]*udpFlow), packets: make(chan datagram, 512),
+		udp: make(map[netip.AddrPort]*udpFlow), tokens: make(map[uint64]*udpFlow), packets: make(chan datagram, 512),
 		done: make(chan struct{}), replyDone: make(chan struct{}), stop: make(chan struct{}), reaped: make(chan struct{})}
 	g.exclusions, g.flowLimit = exclusions, limit
 	g.upstreamEndpoints = endpoints
@@ -572,17 +573,17 @@ func tokenPeer(cookie uint64) netip.AddrPort {
 func (g *Capture) queueUDP(p packet, address [10]uint64) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	key := flowKey{p.source, p.target}
-	flow := g.udp[key]
+	flow := g.udp[p.source]
 	if flow == nil {
 		if len(g.udp) >= g.flowLimit {
 			g.drops.Add(1)
 			return true
 		}
 		g.next++
-		flow = &udpFlow{key: key, cookie: g.next}
-		g.udp[key], g.tokens[flow.cookie] = flow, flow
+		flow = &udpFlow{source: p.source, cookie: g.next}
+		g.udp[p.source], g.tokens[flow.cookie] = flow, flow
 	}
+	flow.lastTarget = p.target
 	flow.seen = time.Now()
 	flow.template = append(flow.template[:0], p.data[:p.payload]...)
 	flow.address = address
@@ -616,6 +617,10 @@ func (g *Capture) ReadPacket(data []byte) (int, netip.AddrPort, netip.AddrPort, 
 }
 
 func (g *Capture) ReplyPacket(peer netip.AddrPort, payload []byte) error {
+	return g.ReplyPacketFrom(peer, netip.AddrPort{}, payload)
+}
+
+func (g *Capture) ReplyPacketFrom(peer, from netip.AddrPort, payload []byte) error {
 	if g.closing.Load() {
 		return net.ErrClosed
 	}
@@ -635,10 +640,13 @@ func (g *Capture) ReplyPacket(peer netip.AddrPort, payload []byte) error {
 	}
 	tplPtr := divertUDPPool.Get().(*[]byte)
 	tn := copy(*tplPtr, flow.template)
-	address, key := returnAddress(flow.address), flow.key
+	address, source := returnAddress(flow.address), flow.source
+	if !from.IsValid() {
+		from = flow.lastTarget
+	}
 	flow.seen = time.Now()
 	g.mu.Unlock()
-	data, err := udpResponse((*tplPtr)[:tn], key.target, key.source, payload)
+	data, err := udpResponse((*tplPtr)[:tn], from, source, payload)
 	divertUDPPool.Put(tplPtr)
 	if err != nil {
 		return err

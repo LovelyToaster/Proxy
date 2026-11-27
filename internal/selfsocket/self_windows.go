@@ -49,6 +49,33 @@ func local(handle windows.Handle) (netip.AddrPort, error) {
 	return netip.AddrPort{}, fmt.Errorf("unsupported socket family")
 }
 
+func registerHandle(handle windows.Handle) error {
+	endpoint, err := local(handle)
+	if err != nil {
+		return err
+	}
+	owned.Lock()
+	defer owned.Unlock()
+	if len(owned.sockets) >= 512 {
+		for socket, entry := range owned.sockets {
+			now, err := local(socket)
+			if err != nil || now.Port() != entry.port || now.Addr().Is6() != entry.v6 {
+				forget(socket)
+			}
+		}
+	}
+	if len(owned.sockets) >= 4096 {
+		return fmt.Errorf("own UDP socket registry full")
+	}
+	forget(handle)
+	owned.sockets[handle] = socket{endpoint.Port(), endpoint.Addr().Is6()}
+	if owned.ports[endpoint.Port()] == nil {
+		owned.ports[endpoint.Port()] = make(map[windows.Handle]bool)
+	}
+	owned.ports[endpoint.Port()][handle] = true
+	return nil
+}
+
 // Pre-bind an exclusive UDP endpoint before connect can send any packet. Keep
 // the real handle, not just a timed port exemption. Closed/reused handles are
 // checked against their current endpoint before a packet can bypass capture.
@@ -87,31 +114,7 @@ func Dialer(d net.Dialer) net.Dialer {
 			if result = windows.Bind(handle, bind); result != nil {
 				return
 			}
-			endpoint, err := local(handle)
-			if err != nil {
-				result = err
-				return
-			}
-			owned.Lock()
-			defer owned.Unlock()
-			if len(owned.sockets) >= 512 {
-				for socket, entry := range owned.sockets {
-					now, err := local(socket)
-					if err != nil || now.Port() != entry.port || now.Addr().Is6() != entry.v6 {
-						forget(socket)
-					}
-				}
-			}
-			if len(owned.sockets) >= 4096 {
-				result = fmt.Errorf("own UDP socket registry full")
-				return
-			}
-			forget(handle)
-			owned.sockets[handle] = socket{endpoint.Port(), endpoint.Addr().Is6()}
-			if owned.ports[endpoint.Port()] == nil {
-				owned.ports[endpoint.Port()] = make(map[windows.Handle]bool)
-			}
-			owned.ports[endpoint.Port()][handle] = true
+			result = registerHandle(handle)
 		})
 		if err != nil {
 			return err
@@ -119,6 +122,45 @@ func Dialer(d net.Dialer) net.Dialer {
 		return result
 	}
 	return d
+}
+
+func ListenUDP(ctx context.Context, _ net.Dialer, network string) (*net.UDPConn, error) {
+	addr := "0.0.0.0:0"
+	if network == "udp6" {
+		addr = "[::]:0"
+	}
+	lc := net.ListenConfig{
+		Control: func(_, _ string, raw syscall.RawConn) error {
+			var result error
+			err := raw.Control(func(fd uintptr) {
+				result = windows.SetsockoptInt(windows.Handle(fd), windows.SOL_SOCKET, ^windows.SO_REUSEADDR, 1)
+			})
+			if err != nil {
+				return err
+			}
+			return result
+		},
+	}
+	pc, err := lc.ListenPacket(ctx, network, addr)
+	if err != nil {
+		return nil, err
+	}
+	conn := pc.(*net.UDPConn)
+	raw, err := conn.SyscallConn()
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	var regErr error
+	if err := raw.Control(func(fd uintptr) { regErr = registerHandle(windows.Handle(fd)) }); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	if regErr != nil {
+		conn.Close()
+		return nil, regErr
+	}
+	return conn, nil
 }
 
 func Owns(source netip.AddrPort, protocol byte) bool {

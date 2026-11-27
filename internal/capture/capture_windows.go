@@ -120,8 +120,8 @@ func GuardPackets(guard *Guard, c config.Capture) *PacketListener {
 	return &PacketListener{
 		Transparent: true, ReadPacket: guard.divert.ReadPacket, CaptureDrops: guard.divert.UDPDrops,
 		closePacket: func() error { return nil },
-		Reply: func(peer, _ netip.AddrPort) (Reply, error) {
-			return Reply{Write: func(payload []byte) error { return guard.divert.ReplyPacket(peer, payload) }, Close: func() {}}, nil
+		Reply: func(peer, target netip.AddrPort) (Reply, error) {
+			return Reply{Write: func(payload []byte) error { return guard.divert.ReplyPacketFrom(peer, target, payload) }, Close: func() {}}, nil
 		},
 	}
 }

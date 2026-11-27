@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"proxy.local/m0/internal/config"
+	"proxy.local/m0/internal/selfsocket"
 )
 
 func socksAuth(conn io.ReadWriter, proxy config.Outbound) error {
@@ -113,6 +114,14 @@ func readSocksAddress(reader io.Reader, kind byte) (string, uint16, error) {
 	}
 	ip, _ := netip.AddrFromSlice(encoded[:size])
 	return ip.Unmap().String(), port, nil
+}
+
+func ListenDirectUDP(ctx context.Context, dialer net.Dialer, v6 bool) (*net.UDPConn, error) {
+	network := "udp4"
+	if v6 {
+		network = "udp6"
+	}
+	return selfsocket.ListenUDP(ctx, dialer, network)
 }
 
 func DialUDP(ctx context.Context, dialer net.Dialer, proxy config.Outbound, target netip.AddrPort, timeout time.Duration) (net.Conn, error) {
