@@ -8,6 +8,11 @@ import (
 	"time"
 )
 
+const (
+	DefaultGeoIPURL   = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
+	DefaultGeoSiteURL = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
+)
+
 type Geo struct {
 	GeoIP    DataSource    `yaml:"geoip"`
 	GeoSite  DataSource    `yaml:"geosite"`

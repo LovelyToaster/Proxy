@@ -30,6 +30,18 @@ type Config struct {
 	Geo       Geo                 `yaml:"geo"`
 	Service   Service             `yaml:"service"`
 	Web       Web                 `yaml:"web"`
+	Update    Update              `yaml:"update"`
+}
+
+const (
+	DefaultUpdateRepo    = "LovelyToaster/Proxy"
+	DefaultUpdateChannel = "stable"
+)
+
+type Update struct {
+	Repo    string `yaml:"repo"`
+	BaseURL string `yaml:"base_url"`
+	Channel string `yaml:"channel"`
 }
 
 type Web struct {
@@ -137,6 +149,8 @@ func Load(path string) (Config, error) {
 		Network: Network{ConnectTimeout: 10 * time.Second, IdleTimeout: 5 * time.Minute, MaxConnections: 256, UDPTimeout: 60 * time.Second, MaxUDPSessions: 256, IPv6FallbackDelay: DefaultIPv6FallbackDelay},
 		Capture: Capture{Mode: "off", IPv4: true, IPv6: true, Port: 15080},
 		DNS:     DNS{Listen: []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:15353"), netip.MustParseAddrPort("[::1]:15353")}, Timeout: 4 * time.Second, Cache: DNSCache{Enabled: true, MaxEntries: 4096, Algorithm: "arc", NegativeTTL: 60 * time.Second, Stale: DNSCacheStale{StaleTTL: 24 * time.Hour, ServeTTL: 5 * time.Second}, Persist: DNSCachePersist{File: "data/dns_cache.dat", SyncInterval: time.Hour}}},
+		Geo:     Geo{GeoIP: DataSource{URL: DefaultGeoIPURL}, GeoSite: DataSource{URL: DefaultGeoSiteURL}},
+		Update:  Update{Repo: DefaultUpdateRepo, Channel: DefaultUpdateChannel},
 	}
 	info, err := file.Stat()
 	if err != nil {
@@ -386,7 +400,10 @@ func (c *Config) validate() error {
 			}
 		}
 	}
-	return c.Geo.validate()
+	if err := c.Geo.validate(); err != nil {
+		return err
+	}
+	return c.Update.validate()
 }
 
 func ValidateCapture(c Capture) error {

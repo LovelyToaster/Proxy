@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"proxy.local/m0/internal/buildinfo"
 	"proxy.local/m0/internal/capture"
 	"proxy.local/m0/internal/config"
 	"proxy.local/m0/internal/dnsengine"
@@ -31,7 +32,7 @@ import (
 	"proxy.local/m0/internal/web"
 )
 
-const Version = "0.1.0-m3"
+var Version = buildinfo.Version
 
 type connection struct {
 	ID          uint64         `json:"id"`
