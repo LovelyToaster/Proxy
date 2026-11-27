@@ -173,6 +173,9 @@ func loadPersist(r io.Reader, now time.Time, stale staleOptions) ([]cacheSnapsho
 		if err := msg.Unpack(wire); err != nil {
 			continue
 		}
+		if isNegativeResponse(msg, qtype) {
+			continue
+		}
 
 		key := cacheKey{
 			policy: string(policyBytes),

@@ -284,7 +284,7 @@ func (c *arcCache) snapshot() []cacheSnapshot {
 	res := make([]cacheSnapshot, 0, c.t1.Len()+c.t2.Len())
 	for e := c.t2.Front(); e != nil; e = e.Next() {
 		entry := e.Value.(*arcEntry)
-		if entry.value != nil && entry.value.response != nil {
+		if entry.value != nil && entry.value.response != nil && !entry.value.negative {
 			res = append(res, cacheSnapshot{
 				Key:      entry.key,
 				Response: entry.value.response.Copy(),
@@ -296,7 +296,7 @@ func (c *arcCache) snapshot() []cacheSnapshot {
 	}
 	for e := c.t1.Front(); e != nil; e = e.Next() {
 		entry := e.Value.(*arcEntry)
-		if entry.value != nil && entry.value.response != nil {
+		if entry.value != nil && entry.value.response != nil && !entry.value.negative {
 			res = append(res, cacheSnapshot{
 				Key:      entry.key,
 				Response: entry.value.response.Copy(),
@@ -313,7 +313,7 @@ func (c *arcCache) restore(items []cacheSnapshot, now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, item := range items {
-		if item.Response == nil {
+		if item.Response == nil || isNegativeResponse(item.Response, item.Key.question.Qtype) {
 			continue
 		}
 		age := uint32(now.Sub(item.Stored) / time.Second)

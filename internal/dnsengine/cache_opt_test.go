@@ -100,6 +100,46 @@ func TestNegativeTTLAndResponseEDNS0(t *testing.T) {
 	}
 }
 
+func TestNegativeTTLCapsLargeSOA(t *testing.T) {
+	now := time.Now()
+	req := new(dns.Msg).SetQuestion("big-soa.example.com.", dns.TypeA)
+	key, _ := makeKey("default", req)
+
+	// Large SOA Minttl=3600s should be capped by negativeTTL=60s
+	nxLarge := new(dns.Msg).SetRcode(req, dns.RcodeNameError)
+	soaLarge, _ := dns.NewRR("example.com. 3600 IN SOA ns.example.com. admin.example.com. 1 30 30 30 3600")
+	nxLarge.Ns = []dns.RR{soaLarge}
+
+	c := newARCCache(16, staleOptions{})
+	c.negativeTTL = 60
+	if reason := c.put(key, nxLarge, now); reason != rejectNone {
+		t.Fatalf("expected NXDOMAIN with large SOA to cache, got %v", reason)
+	}
+	got, state := c.get(key, req, now.Add(10*time.Second))
+	if state != entryFresh || got == nil || len(got.Ns) != 1 || got.Ns[0].Header().Ttl != 50 {
+		t.Fatalf("expected capped SOA TTL 50 at +10s, got state=%v ns=%v", state, got)
+	}
+	if got, state := c.get(key, req, now.Add(60*time.Second)); state != entryMiss || got != nil {
+		t.Fatalf("expected capped negative entry to expire at +60s, got state=%v", state)
+	}
+
+	// Smaller SOA Minttl=10s should be preserved (< negativeTTL=60s)
+	nxSmall := new(dns.Msg).SetRcode(req, dns.RcodeNameError)
+	soaSmall, _ := dns.NewRR("example.com. 300 IN SOA ns.example.com. admin.example.com. 1 30 30 30 10")
+	nxSmall.Ns = []dns.RR{soaSmall}
+
+	if reason := c.put(key, nxSmall, now); reason != rejectNone {
+		t.Fatalf("expected NXDOMAIN with small SOA to cache, got %v", reason)
+	}
+	got, state = c.get(key, req, now.Add(3*time.Second))
+	if state != entryFresh || got == nil || got.Ns[0].Header().Ttl != 7 {
+		t.Fatalf("expected preserved SOA TTL 7 at +3s, got state=%v ns=%v", state, got)
+	}
+	if got, state := c.get(key, req, now.Add(10*time.Second)); state != entryMiss || got != nil {
+		t.Fatalf("expected small SOA negative entry to expire at +10s, got state=%v", state)
+	}
+}
+
 func TestEngineMissSingleFlightAndMetrics(t *testing.T) {
 	var upstreamCalls atomic.Int32
 	gate := make(chan struct{})

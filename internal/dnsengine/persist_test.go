@@ -247,10 +247,10 @@ func TestEnginePersistenceLifecycle(t *testing.T) {
 
 	// 1. First Engine session
 	e1 := &Engine{
-		upstreams: map[string]upstream.Upstream{"default": mock},
-		rules:     []config.DNSRule{{Upstream: "default"}},
-		cache:     newARCCache(16, staleOptions{}),
-		workers:   make(chan struct{}, 128),
+		upstreams:    map[string]upstream.Upstream{"default": mock},
+		rules:        []config.DNSRule{{Upstream: "default"}},
+		cache:        newARCCache(16, staleOptions{}),
+		workers:      make(chan struct{}, 128),
 		cachePersist: cfg.Cache.Persist,
 	}
 
@@ -284,10 +284,10 @@ func TestEnginePersistenceLifecycle(t *testing.T) {
 	cache2.restore(loaded, time.Now())
 
 	e2 := &Engine{
-		upstreams: map[string]upstream.Upstream{"default": mock},
-		rules:     []config.DNSRule{{Upstream: "default"}},
-		cache:     cache2,
-		workers:   make(chan struct{}, 128),
+		upstreams:    map[string]upstream.Upstream{"default": mock},
+		rules:        []config.DNSRule{{Upstream: "default"}},
+		cache:        cache2,
+		workers:      make(chan struct{}, 128),
 		cachePersist: cfg.Cache.Persist,
 	}
 
@@ -309,5 +309,87 @@ func TestEnginePersistenceLifecycle(t *testing.T) {
 	}
 	if _, err := os.Stat(cachePath); !os.IsNotExist(err) {
 		t.Fatalf("expected cache file %s to be deleted on Flush", cachePath)
+	}
+}
+
+func TestPersistSkipsNegativeEntries(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+
+	posReq := new(dns.Msg).SetQuestion("pos.test.", dns.TypeA)
+	posKey, _ := makeKey("default", posReq)
+	posResp := makeTestMsg("pos.test.", 300)
+
+	nxReq := new(dns.Msg).SetQuestion("nx.test.", dns.TypeA)
+	nxKey, _ := makeKey("default", nxReq)
+	nxResp := new(dns.Msg).SetRcode(nxReq, dns.RcodeNameError)
+
+	ndReq := new(dns.Msg).SetQuestion("nd.test.", dns.TypeAAAA)
+	ndKey, _ := makeKey("default", ndReq)
+	ndResp := new(dns.Msg).SetReply(ndReq)
+
+	// 1. snapshot() skips negative entries for both ARC and LRU
+	for _, tc := range []struct {
+		name  string
+		cache dnsCache
+	}{
+		{"arc", newCacheWithOptions(cacheOptions{algorithm: "arc", maxEntries: 16, negativeTTL: 60})},
+		{"lru", newCacheWithOptions(cacheOptions{algorithm: "lru", maxEntries: 16, negativeTTL: 60})},
+	} {
+		t.Run(tc.name+"_snapshot", func(t *testing.T) {
+			tc.cache.put(posKey, posResp, now)
+			tc.cache.put(nxKey, nxResp, now)
+			tc.cache.put(ndKey, ndResp, now)
+			if tc.cache.size() != 3 {
+				t.Fatalf("expected 3 entries in memory, got %d", tc.cache.size())
+			}
+			snaps := tc.cache.snapshot()
+			if len(snaps) != 1 || snaps[0].Key != posKey {
+				t.Fatalf("expected snapshot to contain only positive entry, got %d entries", len(snaps))
+			}
+		})
+	}
+
+	// 2. loadPersist() skips both fresh and stale negative entries from legacy cache files
+	legacyEntries := []cacheSnapshot{
+		{Key: posKey, Response: posResp, Stored: now, TTL: 300, Frequent: true},
+		{Key: nxKey, Response: nxResp, Stored: now, TTL: 60, Frequent: false},
+		{Key: ndKey, Response: ndResp, Stored: now.Add(-100 * time.Second), TTL: 60, Frequent: false},
+	}
+	var buf bytes.Buffer
+	if err := savePersist(&buf, legacyEntries); err != nil {
+		t.Fatalf("savePersist failed: %v", err)
+	}
+	staleOpts := staleOptions{enabled: true, staleTTL: 24 * time.Hour, serveTTL: 5}
+	loaded, err := loadPersist(bytes.NewReader(buf.Bytes()), now, staleOpts)
+	if err != nil {
+		t.Fatalf("loadPersist failed: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].Key != posKey {
+		t.Fatalf("expected loadPersist to keep only positive entry, got %d entries", len(loaded))
+	}
+
+	// 3. restore() also skips negative entries directly for both ARC and LRU
+	for _, tc := range []struct {
+		name  string
+		cache dnsCache
+	}{
+		{"arc", newARCCache(16, staleOpts)},
+		{"lru", newLRUCache(16, staleOpts)},
+	} {
+		t.Run(tc.name+"_restore", func(t *testing.T) {
+			tc.cache.restore(legacyEntries, now)
+			if tc.cache.size() != 1 {
+				t.Fatalf("expected restore to keep only 1 positive entry, got %d", tc.cache.size())
+			}
+			if _, state := tc.cache.get(posKey, posReq, now); state != entryFresh {
+				t.Fatalf("expected positive entry restored, got state=%v", state)
+			}
+			if _, state := tc.cache.get(nxKey, nxReq, now); state != entryMiss {
+				t.Fatalf("expected NXDOMAIN skipped on restore, got state=%v", state)
+			}
+			if _, state := tc.cache.get(ndKey, ndReq, now); state != entryMiss {
+				t.Fatalf("expected NODATA skipped on restore, got state=%v", state)
+			}
+		})
 	}
 }

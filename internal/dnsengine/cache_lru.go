@@ -97,6 +97,9 @@ func (c *lruCache) snapshot() []cacheSnapshot {
 	res := make([]cacheSnapshot, 0, len(c.items))
 	for e := c.lru.Front(); e != nil; e = e.Next() {
 		val := e.Value.(*cacheValue)
+		if val.response == nil || val.negative {
+			continue
+		}
 		res = append(res, cacheSnapshot{
 			Key:      val.key,
 			Response: val.response.Copy(),
@@ -112,7 +115,7 @@ func (c *lruCache) restore(items []cacheSnapshot, now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, item := range items {
-		if item.Response == nil {
+		if item.Response == nil || isNegativeResponse(item.Response, item.Key.question.Qtype) {
 			continue
 		}
 		age := uint32(now.Sub(item.Stored) / time.Second)

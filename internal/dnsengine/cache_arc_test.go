@@ -240,3 +240,50 @@ func TestLRUStaleEvaluation(t *testing.T) {
 		t.Fatalf("unexpected miss: state=%v, got=%v", state, got)
 	}
 }
+
+func TestNegativeCacheNeverServesStale(t *testing.T) {
+	stale := staleOptions{
+		enabled:  true,
+		staleTTL: 24 * time.Hour,
+		serveTTL: 5,
+	}
+	now := time.Now()
+
+	for _, tc := range []struct {
+		name  string
+		cache dnsCache
+	}{
+		{"arc", newCacheWithOptions(cacheOptions{algorithm: "arc", maxEntries: 8, negativeTTL: 10, stale: stale})},
+		{"lru", newCacheWithOptions(cacheOptions{algorithm: "lru", maxEntries: 8, negativeTTL: 10, stale: stale})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// 1. NXDOMAIN
+			nxReq := new(dns.Msg).SetQuestion("missing.test.", dns.TypeA)
+			nxKey, _ := makeKey("p", nxReq)
+			nxResp := new(dns.Msg).SetRcode(nxReq, dns.RcodeNameError)
+			if reason := tc.cache.put(nxKey, nxResp, now); reason != rejectNone {
+				t.Fatalf("expected NXDOMAIN to cache, got %v", reason)
+			}
+			if got, state := tc.cache.get(nxKey, nxReq, now.Add(5*time.Second)); state != entryFresh || got == nil {
+				t.Fatalf("expected fresh NXDOMAIN hit, got state=%v", state)
+			}
+			if got, state := tc.cache.get(nxKey, nxReq, now.Add(10*time.Second)); state != entryMiss || got != nil {
+				t.Fatalf("expected expired NXDOMAIN to miss (no stale), got state=%v msg=%v", state, got)
+			}
+
+			// 2. NODATA
+			ndReq := new(dns.Msg).SetQuestion("nodata.test.", dns.TypeAAAA)
+			ndKey, _ := makeKey("p", ndReq)
+			ndResp := new(dns.Msg).SetReply(ndReq)
+			if reason := tc.cache.put(ndKey, ndResp, now); reason != rejectNone {
+				t.Fatalf("expected NODATA to cache, got %v", reason)
+			}
+			if got, state := tc.cache.get(ndKey, ndReq, now.Add(5*time.Second)); state != entryFresh || got == nil {
+				t.Fatalf("expected fresh NODATA hit, got state=%v", state)
+			}
+			if got, state := tc.cache.get(ndKey, ndReq, now.Add(10*time.Second)); state != entryMiss || got != nil {
+				t.Fatalf("expected expired NODATA to miss (no stale), got state=%v msg=%v", state, got)
+			}
+		})
+	}
+}

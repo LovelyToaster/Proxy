@@ -42,6 +42,7 @@ type cacheValue struct {
 	stored   time.Time
 	ttl      uint32
 	size     int
+	negative bool
 }
 
 type staleOptions struct {
@@ -100,7 +101,7 @@ func (v *cacheValue) evaluate(query *dns.Msg, now time.Time, stale staleOptions)
 		eachRR(result, func(rr dns.RR) { rr.Header().Ttl -= min(age, rr.Header().Ttl) })
 		return result, entryFresh
 	}
-	if stale.enabled {
+	if !v.negative && stale.enabled {
 		staleLimit := v.ttl + uint32(math.Ceil(stale.staleTTL.Seconds()))
 		if stale.staleTTL == 0 || age < staleLimit {
 			result := v.response.Copy()
@@ -171,7 +172,7 @@ func cacheTTL(response *dns.Msg, qtype uint16, negativeTTL uint32) (uint32, putR
 		}
 	}
 	ttl := uint32(86400)
-	if response.Rcode == dns.RcodeNameError || !hasAnswerType(response, qtype) {
+	if isNegativeResponse(response, qtype) {
 		var negative uint32
 		for _, rr := range response.Ns {
 			if soa, ok := rr.(*dns.SOA); ok {
@@ -184,6 +185,8 @@ func cacheTTL(response *dns.Msg, qtype uint16, negativeTTL uint32) (uint32, putR
 				return 0, rejectNoSOA
 			}
 			negative = negativeTTL
+		} else if negativeTTL > 0 {
+			negative = min(negative, negativeTTL)
 		}
 		ttl = min(ttl, negative)
 	}
@@ -213,7 +216,8 @@ func prepareCacheValue(key cacheKey, response *dns.Msg, now time.Time, negativeT
 		}
 		copyMsg.Extra = filtered
 	}
-	if response.Rcode == dns.RcodeNameError || !hasAnswerType(response, key.question.Qtype) {
+	negative := isNegativeResponse(response, key.question.Qtype)
+	if negative {
 		eachRR(copyMsg, func(rr dns.RR) { rr.Header().Ttl = min(ttl, rr.Header().Ttl) })
 	}
 	return &cacheValue{
@@ -222,7 +226,12 @@ func prepareCacheValue(key cacheKey, response *dns.Msg, now time.Time, negativeT
 		stored:   now,
 		ttl:      ttl,
 		size:     size,
+		negative: negative,
 	}, rejectNone
+}
+
+func isNegativeResponse(response *dns.Msg, qtype uint16) bool {
+	return response.Rcode == dns.RcodeNameError || !hasAnswerType(response, qtype)
 }
 
 func hasAnswerType(response *dns.Msg, qtype uint16) bool {
