@@ -60,7 +60,10 @@ try {
         if ($FetchGeo -or -not (Test-Path $dst)) {
             Write-Host "Downloading $geoFile from Loyalsoldier/v2ray-rules-dat..."
             Invoke-WebRequest -Uri "$geoBase/$geoFile" -OutFile $dst -UseBasicParsing
-            $sumText = (Invoke-WebRequest -Uri "$geoBase/$geoFile.sha256sum" -UseBasicParsing).Content.Trim()
+            $sumFile = "$dst.sha256sum"
+            Invoke-WebRequest -Uri "$geoBase/$geoFile.sha256sum" -OutFile $sumFile -UseBasicParsing
+            $sumText = (Get-Content $sumFile -Raw).Trim()
+            Remove-Item $sumFile -Force -ErrorAction SilentlyContinue
             $expected = ($sumText -split '\s+')[0].ToLowerInvariant()
             $actual = (Get-FileHash $dst -Algorithm SHA256).Hash.ToLowerInvariant()
             if ($actual -ne $expected) {
