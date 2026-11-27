@@ -114,9 +114,6 @@ func Install(executable, path, runtime string, automatic bool) error {
 	if err != nil {
 		return err
 	}
-	if cfg.Capture.Mode == "wfp" {
-		return errors.New("the WFP prototype requires an elevated foreground process")
-	}
 	scm, err := mgr.Connect()
 	if err != nil {
 		return err

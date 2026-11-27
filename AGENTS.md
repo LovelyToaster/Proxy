@@ -4,7 +4,7 @@
 
 - `cmd/proxy` contains the unified binary for management CLI, foreground execution, and service hosting. `cmd/m0` and `cmd/proxy-probe` provide network test utilities.
 - `internal/` contains configuration, routing, DNS, outbound connections, sessions, service management, and platform capture packages. Tests live beside implementation files.
-- `configs/` holds example YAML configurations. `platform/` contains Linux systemd templates and the historical Windows WFP driver.
+- `configs/` holds example YAML configurations. `platform/` contains Linux systemd templates.
 - `scripts/` provides platform smoke tests, diagnostics, and packaging. `dist/` contains packaged runtime files; `artifacts/` records acceptance results.
 
 ## Build, Test, and Development Commands

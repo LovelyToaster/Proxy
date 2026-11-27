@@ -14,9 +14,6 @@ artifacts/
 *.sys
 *.dylib
 *.so
-platform/windows/wfp-driver/out/
-platform/windows/wfp-driver/x64/
-platform/windows/wfp-driver/ARM64/
 
 # Visual Studio / MSBuild files
 *.suo

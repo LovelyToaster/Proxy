@@ -5,21 +5,19 @@ import (
 	"testing"
 )
 
-func TestWFPRequiresNarrowScope(t *testing.T) {
+func TestWinDivertLabScope(t *testing.T) {
 	base := Capture{
-		Mode: "wfp", IPv4: true, IPv6: true, Port: 15090, Ports: []uint16{19090},
-		WFPApplication: `C:\ProxyLab\wfp-probe.exe`,
-		CIDRs:          []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32"), netip.MustParsePrefix("::1/128")},
+		Mode: "windivert", IPv4: true, IPv6: true, Port: 15090, Ports: []uint16{19090},
+		WindowsApplication: `C:\ProxyLab\probe.exe`,
+		CIDRs:              []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32"), netip.MustParsePrefix("::1/128")},
 	}
 	if err := ValidateCapture(base); err != nil {
 		t.Fatal(err)
 	}
 	for name, mutate := range map[string]func(*Capture){
-		"external UDP": func(c *Capture) {
-			c.UDP = true
-			c.CIDRs = []netip.Prefix{netip.MustParsePrefix("192.0.2.1/32"), c.CIDRs[1]}
-		},
-		"relative app":   func(c *Capture) { c.WFPApplication = "wfp-probe.exe" },
+		"missing app":    func(c *Capture) { c.WindowsApplication = "" },
+		"relative app":   func(c *Capture) { c.WindowsApplication = "probe.exe" },
+		"external IP":    func(c *Capture) { c.CIDRs = []netip.Prefix{netip.MustParsePrefix("192.0.2.1/32"), c.CIDRs[1]} },
 		"subnet":         func(c *Capture) { c.CIDRs = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/24"), c.CIDRs[1]} },
 		"more ports":     func(c *Capture) { c.Ports = []uint16{19090, 19091} },
 		"reserved port":  func(c *Capture) { c.Ports = []uint16{53} },
@@ -29,7 +27,7 @@ func TestWFPRequiresNarrowScope(t *testing.T) {
 			candidate := base
 			mutate(&candidate)
 			if err := ValidateCapture(candidate); err == nil {
-				t.Fatal("unsafe WFP scope accepted")
+				t.Fatal("unsafe WinDivert lab scope accepted")
 			}
 		})
 	}
@@ -41,22 +39,10 @@ func TestWFPRequiresNarrowScope(t *testing.T) {
 	if err := ValidateCapture(base); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func TestWinDivertScope(t *testing.T) {
-	c := Capture{Mode: "windivert", IPv4: true, Port: 15090, Ports: []uint16{19090}, UDP: true,
-		WindowsApplication: `C:\ProxyLab\probe.exe`, CIDRs: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}}
-	if err := ValidateCapture(c); err != nil {
-		t.Fatal(err)
-	}
-	c.WindowsApplication = ""
-	if ValidateCapture(c) == nil {
-		t.Fatal("missing application accepted")
-	}
-	c.WindowsApplication = `C:\ProxyLab\probe.exe`
-	c.CIDRs = []netip.Prefix{netip.MustParsePrefix("192.0.2.1/32")}
-	if ValidateCapture(c) == nil {
-		t.Fatal("external prototype target accepted")
+	rejected := base
+	rejected.Mode = "wfp"
+	if ValidateCapture(rejected) == nil {
+		t.Fatal("removed wfp mode accepted")
 	}
 }
 

@@ -80,7 +80,6 @@ type Capture struct {
 	Namespace           string         `yaml:"namespace"`
 	UDP                 bool           `yaml:"udp"`
 	DNSHijack           bool           `yaml:"-"`
-	WFPApplication      string         `yaml:"wfp_application"`
 	WindowsApplication  string         `yaml:"windows_application"`
 	ExcludeApplications []string       `yaml:"exclude_applications"`
 }
@@ -120,10 +119,10 @@ func (r Rule) Default() bool {
 }
 
 var (
-	wfpAppPath    = regexp.MustCompile(`(?i)^[a-z]:[\\/].+\.exe$`)
-	interfaceName = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,15}$`)
-	namespaceID   = regexp.MustCompile(`^net:\[[0-9]+\]$`)
-	countryCode   = regexp.MustCompile(`^[A-Z]{2}$`)
+	windowsAppPath = regexp.MustCompile(`(?i)^[a-z]:[\\/].+\.exe$`)
+	interfaceName  = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,15}$`)
+	namespaceID    = regexp.MustCompile(`^net:\[[0-9]+\]$`)
+	countryCode    = regexp.MustCompile(`^[A-Z]{2}$`)
 )
 
 func Load(path string) (Config, error) {
@@ -245,7 +244,7 @@ func nativeCaptureMode(c Capture, platform string) (string, error) {
 		}
 		return "windivert", nil
 	case "linux":
-		if c.Scope == "application" || c.WindowsApplication != "" || c.WFPApplication != "" || len(c.ExcludeApplications) != 0 {
+		if c.Scope == "application" || c.WindowsApplication != "" || len(c.ExcludeApplications) != 0 {
 			return "", errors.New("Windows application capture options are unavailable on Linux")
 		}
 		if len(c.Interfaces) > 0 {
@@ -397,11 +396,8 @@ func ValidateCapture(c Capture) error {
 		}
 		return nil
 	}
-	if c.Mode == "wfp" {
-		return validateWFP(c)
-	}
 	if c.Mode == "windivert" {
-		if c.Scope != "global" && !wfpAppPath.MatchString(c.WindowsApplication) {
+		if c.Scope != "global" && !windowsAppPath.MatchString(c.WindowsApplication) {
 			return errors.New("WinDivert requires an absolute windows_application .exe path")
 		}
 		if c.Scope == "application" || c.Scope == "global" {
@@ -412,7 +408,7 @@ func ValidateCapture(c Capture) error {
 				return errors.New("too many excluded applications")
 			}
 			for _, app := range c.ExcludeApplications {
-				if !wfpAppPath.MatchString(app) {
+				if !windowsAppPath.MatchString(app) {
 					return errors.New("excluded applications require absolute .exe paths")
 				}
 			}
@@ -435,9 +431,7 @@ func ValidateCapture(c Capture) error {
 		if c.Scope != "" && c.Scope != "lab" {
 			return errors.New("WinDivert scope must be lab, application or global")
 		}
-		legacy := c
-		legacy.WFPApplication = c.WindowsApplication
-		if err := validateWFP(legacy); err != nil {
+		if err := validateWinDivertLab(c); err != nil {
 			return fmt.Errorf("WinDivert scope: %w", err)
 		}
 		for _, prefix := range c.CIDRs {
@@ -448,13 +442,13 @@ func ValidateCapture(c Capture) error {
 		return nil
 	}
 	if c.Mode != "local" && c.Mode != "gateway" {
-		return errors.New("capture.mode must be off, local, gateway, wfp or windivert")
+		return errors.New("capture.mode must be off, local, gateway or windivert")
 	}
 	global := c.Scope == "global"
 	if c.Scope != "" && c.Scope != "lab" && !global {
 		return errors.New("Linux capture.scope must be lab or global")
 	}
-	if c.WindowsApplication != "" || c.WFPApplication != "" || len(c.ExcludeApplications) != 0 {
+	if c.WindowsApplication != "" || len(c.ExcludeApplications) != 0 {
 		return errors.New("Linux capture does not support Windows application selectors")
 	}
 	if (!global || c.Namespace != "") && !namespaceID.MatchString(c.Namespace) {
@@ -489,39 +483,39 @@ func ValidateCapture(c Capture) error {
 	return nil
 }
 
-func validateWFP(c Capture) error {
-	if !wfpAppPath.MatchString(c.WFPApplication) || c.Namespace != "" || len(c.Interfaces) != 0 {
-		return errors.New("WFP prototype requires an absolute local .exe path")
+func validateWinDivertLab(c Capture) error {
+	if !windowsAppPath.MatchString(c.WindowsApplication) || c.Namespace != "" || len(c.Interfaces) != 0 {
+		return errors.New("lab scope requires an absolute local .exe path")
 	}
 	if !c.IPv4 && !c.IPv6 || c.Port < 1024 || len(c.Ports) > 1 ||
 		len(c.Ports) == 0 && (!c.DNSHijack || c.UDP) ||
 		len(c.Ports) == 1 && (c.Ports[0] < 1024 || c.Ports[0] == c.Port) {
-		return errors.New("WFP requires one high target port distinct from the listener port, or DNS-only capture")
+		return errors.New("lab scope requires one high target port distinct from the listener port, or DNS-only capture")
 	}
 	v4, v6 := false, false
 	for _, prefix := range c.CIDRs {
 		ip := prefix.Addr()
 		if !ip.IsValid() || ip.Is4In6() || ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalUnicast() ||
 			ip == netip.MustParseAddr("255.255.255.255") || prefix.Bits() != ip.BitLen() {
-			return errors.New("WFP requires exact, unicast target addresses")
+			return errors.New("lab scope requires exact, unicast target addresses")
 		}
 		if (c.UDP || c.DNSHijack) && !ip.IsLoopback() {
-			return errors.New("WFP UDP and DNS capture require loopback targets")
+			return errors.New("lab scope UDP and DNS capture require loopback targets")
 		}
 		if ip.Is4() {
 			if v4 {
-				return errors.New("WFP accepts one target per address family")
+				return errors.New("lab scope accepts one target per address family")
 			}
 			v4 = true
 		} else {
 			if v6 {
-				return errors.New("WFP accepts one target per address family")
+				return errors.New("lab scope accepts one target per address family")
 			}
 			v6 = true
 		}
 	}
 	if v4 != c.IPv4 || v6 != c.IPv6 {
-		return errors.New("WFP requires exactly one target for each enabled address family")
+		return errors.New("lab scope requires exactly one target for each enabled address family")
 	}
 	return nil
 }

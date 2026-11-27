@@ -53,8 +53,8 @@ func checkNamespace(expected string, host ...bool) error {
 }
 
 func Listen(c config.Capture) ([]Listener, error) {
-	if c.Mode == "wfp" || c.Mode == "windivert" {
-		return nil, errors.New("WFP and WinDivert capture require Windows")
+	if c.Mode == "windivert" {
+		return nil, errors.New("WinDivert capture requires Windows")
 	}
 	if c.Mode == "off" {
 		return nil, nil

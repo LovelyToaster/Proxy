@@ -32,7 +32,7 @@ func TestNativeCaptureMode(t *testing.T) {
 }
 
 func TestCaptureModeOverrides(t *testing.T) {
-	for _, mode := range []string{"off", "local", "gateway", "windivert", "wfp"} {
+	for _, mode := range []string{"off", "local", "gateway", "windivert"} {
 		// Decode only: explicit foreign backends remain available to config tooling.
 		var c Capture
 		if err := yaml.Unmarshal([]byte("mode: "+mode+"\nscope: global\n"), &c); err != nil {
