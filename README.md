@@ -275,7 +275,7 @@ dns:
    proxy update --force
    proxy update --version v0.2.0
    ```
-   - **不断网更新流程**：`proxy update` 先在现有代理服务保持运行期间完成下载、SHA-256 双重校验（对照 `checksums.txt` 与 `release-manifest.json`）、安全解压与新二进制 `version`/`config check` 预检，全部通过后再停服替换。
+   - **不断网更新流程**：`proxy update` 先在现有代理服务保持运行期间完成下载、SHA-256 双重校验（对照 `checksums.txt` 与 `release-manifest.json`）、安全解压与新二进制 `version`/`config check` 预检，全部通过后再停服替换。若当前运行的是预发布版（如 `v0.1.0-rc.1`），`proxy update` 会自动跟进后续预发布版直至正式版；升级至正式版后默认回到 `stable` 通道。
    - **Windows 行为**：若 `ProxyD` 正在运行则自动停止；仅当 `WinDivert.dll` / `WinDivert64.sys` 哈希发生变化、缺失或指定 `--force` 时，自动通过 SCM 停止并卸载 `WinDivert` 驱动再替换文件；替换完成后同步卸载注册表 `DisplayVersion` 并自动恢复 `ProxyD`，失败自动回滚。
    - **Linux 行为**：若检测到当前程序通过 `.deb` 安装（`dpkg -S` 归属 `proxy`），自动下载校验对应 `.deb` 并执行 `dpkg -i` 升级；否则走 `.tar.gz` 原子替换并重启 `proxyd.service`，失败自动回滚（Linux 内核内置 TPROXY/nftables，无需独立驱动文件）。
 

@@ -106,3 +106,23 @@ func TestParseManifestAndChecksums(t *testing.T) {
 		t.Fatalf("unexpected checksums: %+v", checksums)
 	}
 }
+
+func TestIncludePrerelease(t *testing.T) {
+	cases := []struct {
+		opts Options
+		want bool
+	}{
+		{Options{CurrentVersion: "v0.1.0-rc.1"}, true},
+		{Options{CurrentVersion: "v0.1.0-rc.2"}, true},
+		{Options{CurrentVersion: "v0.1.0"}, false},
+		{Options{CurrentVersion: "v0.1.1"}, false},
+		{Options{CurrentVersion: "0.1.0-dev"}, false},
+		{Options{CurrentVersion: "v0.1.1", Prerelease: true}, true},
+		{Options{CurrentVersion: "v0.1.1", Channel: "prerelease"}, true},
+	}
+	for _, tc := range cases {
+		if got := includePrerelease(tc.opts); got != tc.want {
+			t.Fatalf("includePrerelease(%+v) = %v, want %v", tc.opts, got, tc.want)
+		}
+	}
+}

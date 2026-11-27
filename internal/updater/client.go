@@ -265,7 +265,7 @@ func (c *Client) resolveAssetURLs(ctx context.Context, opts Options) (map[string
 		if err := json.Unmarshal(data, &rel); err != nil {
 			return nil, fmt.Errorf("decode GitHub release: %w", err)
 		}
-	case opts.Prerelease || opts.Channel == "prerelease":
+	case includePrerelease(opts):
 		data, err := c.fetchBytes(ctx, apiBase+"/releases?per_page=10", maxManifestBytes)
 		if err != nil {
 			return nil, fmt.Errorf("query GitHub releases: %w", err)
@@ -369,6 +369,17 @@ func (c *Client) downloadToFile(ctx context.Context, rawURL, dstPath string, lim
 		return "", fmt.Errorf("invalid downloaded size: %d", n)
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func includePrerelease(opts Options) bool {
+	if opts.Prerelease || strings.EqualFold(opts.Channel, "prerelease") {
+		return true
+	}
+	if IsDevVersion(opts.CurrentVersion) {
+		return false
+	}
+	sv, err := ParseVersion(opts.CurrentVersion)
+	return err == nil && sv.IsPrerelease()
 }
 
 func sha256HexBytes(data []byte) string {
