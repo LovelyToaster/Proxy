@@ -79,7 +79,7 @@ Proxy 是用于 Linux 与 Windows 的透明代理与网络转发工具，支持 
 
 - 依赖循环检测：SOCKS5/HTTP 节点域名、更新下载域名及未配置 bootstrap 的 DoH 域名均由 `dns.rules` 解析。若检测到 DNS 上游与出站代理之间存在循环依赖，加载配置时报错 `DNS dependency cycle`。
 - DNS 劫持：配置 `dns.hijack: true` 且 `dns.enabled: true` 时，接管 53 端口请求并转入内置 DNS 引擎处理。
-- DNS 缓存机制：默认启用 `arc` 算法与 Serve-Stale（宽限期 `24h`、返回保护 TTL `5s`，后台 SingleFlight 异步刷新），并每 `1h` 持久化至 `data/dns_cache.dat`；对无状态 EDNS0 选项（Padding/Cookie 等）及无 SOA 的 `NODATA`/`NXDOMAIN`（默认 `negative_ttl: 60s`）正常缓存；`type: system` 上游按当前系统 DNS 服务器列表签名隔离缓存，切换网络或重启后自动失效旧网络条目。
+- DNS 缓存机制：默认启用 `arc` 算法与 Serve-Stale（宽限期 `24h`、返回保护 TTL `5s`，后台 SingleFlight 异步刷新），并每 `1h` 持久化至 `data/dns_cache.dat`；对无状态 EDNS0 选项（Padding/Cookie 等）及 `NODATA`/`NXDOMAIN` 否定响应（默认 `negative_ttl: 60s`，同时作为无 SOA 兜底与含 SOA 时的最大 TTL 上限）正常缓存，但否定响应不启用 Serve-Stale（过期即同步重查上游）且不持久化落盘；`type: system` 上游按当前系统 DNS 服务器列表签名隔离缓存，切换网络或重启后自动失效旧网络条目。
 
 ### 分流与出站
 
@@ -226,8 +226,8 @@ dns:
 | `dns.cache.enabled` | `true` | 是否启用 DNS 缓存 |
 | `dns.cache.max_entries` | `4096` | DNS 响应缓存条目上限 |
 | `dns.cache.algorithm` | `arc` | 缓存替换算法：`arc` 或 `lru` |
-| `dns.cache.negative_ttl` | `60s` | 无 SOA 的否定/NODATA 响应兜底缓存时间（`0s` 关闭） |
-| `dns.cache.stale.enabled` | `true` | 是否启用 Serve-Stale（过期可用与后台异步刷新） |
+| `dns.cache.negative_ttl` | `60s` | 否定/NODATA 响应的兜底与最大缓存时间（`0s` 时仅缓存含 SOA 的否定响应） |
+| `dns.cache.stale.enabled` | `true` | 是否启用 Serve-Stale（仅对正向有效记录生效，否定响应过期即同步重查） |
 | `dns.cache.stale.stale_ttl` | `24h` | 过期后仍可容忍使用的最大宽限窗口（最高 `24h`） |
 | `dns.cache.stale.serve_ttl` | `5s` | 返回过期缓存时重写给客户端的保护 TTL |
 | `dns.cache.persist.enabled` | `true` | 是否启用 DNS 缓存本地持久化 |
