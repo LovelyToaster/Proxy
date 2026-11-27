@@ -126,3 +126,22 @@ func TestIncludePrerelease(t *testing.T) {
 		}
 	}
 }
+
+func TestParseLatestTagFromAtom(t *testing.T) {
+	xmlData := []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <link rel="alternate" type="text/html" href="https://github.com/LovelyToaster/Proxy/releases/tag/v0.1.0-rc.2"/>
+  </entry>
+  <entry>
+    <link rel="alternate" type="text/html" href="https://github.com/LovelyToaster/Proxy/releases/tag/v0.1.0-rc.1"/>
+  </entry>
+</feed>`)
+	tag, err := parseLatestTagFromAtom(xmlData)
+	if err != nil {
+		t.Fatalf("parseLatestTagFromAtom failed: %v", err)
+	}
+	if tag != "v0.1.0-rc.2" {
+		t.Fatalf("got tag %q, want v0.1.0-rc.2", tag)
+	}
+}

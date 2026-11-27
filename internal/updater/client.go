@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -111,14 +111,29 @@ func normalizeOptions(opts Options) Options {
 	return opts
 }
 
-type githubRelease struct {
-	TagName    string `json:"tag_name"`
-	Draft      bool   `json:"draft"`
-	Prerelease bool   `json:"prerelease"`
-	Assets     []struct {
-		Name               string `json:"name"`
-		BrowserDownloadURL string `json:"browser_download_url"`
-	} `json:"assets"`
+type atomFeed struct {
+	Entries []struct {
+		Link struct {
+			Href string `xml:"href,attr"`
+		} `xml:"link"`
+	} `xml:"entry"`
+}
+
+func parseLatestTagFromAtom(data []byte) (string, error) {
+	var feed atomFeed
+	if err := xml.Unmarshal(data, &feed); err != nil {
+		return "", fmt.Errorf("parse releases.atom: %w", err)
+	}
+	for _, entry := range feed.Entries {
+		const marker = "/releases/tag/"
+		if idx := strings.Index(entry.Link.Href, marker); idx >= 0 {
+			tag := strings.TrimSpace(entry.Link.Href[idx+len(marker):])
+			if tag != "" {
+				return tag, nil
+			}
+		}
+	}
+	return "", errors.New("no published releases found in releases.atom")
 }
 
 func (c *Client) Check(ctx context.Context, opts Options) (*CheckResult, error) {
@@ -254,52 +269,32 @@ func (c *Client) resolveAssetURLs(ctx context.Context, opts Options) (map[string
 		}, nil
 	}
 
-	apiBase := "https://api.github.com/repos/" + opts.Repo
-	var rel githubRelease
+	// Use direct github.com release download URLs and releases.atom instead of
+	// api.github.com so shared proxy exit IPs never hit GitHub's 60 req/hr API rate limit.
+	var base string
 	switch {
 	case opts.TargetVersion != "":
-		data, err := c.fetchBytes(ctx, apiBase+"/releases/tags/"+url.PathEscape(opts.TargetVersion), maxManifestBytes)
-		if err != nil {
-			return nil, fmt.Errorf("query GitHub release %s: %w", opts.TargetVersion, err)
-		}
-		if err := json.Unmarshal(data, &rel); err != nil {
-			return nil, fmt.Errorf("decode GitHub release: %w", err)
-		}
+		base = "https://github.com/" + opts.Repo + "/releases/download/" + url.PathEscape(opts.TargetVersion)
 	case includePrerelease(opts):
-		data, err := c.fetchBytes(ctx, apiBase+"/releases?per_page=10", maxManifestBytes)
+		atomURL := "https://github.com/" + opts.Repo + "/releases.atom"
+		data, err := c.fetchBytes(ctx, atomURL, maxManifestBytes)
 		if err != nil {
-			return nil, fmt.Errorf("query GitHub releases: %w", err)
+			return nil, fmt.Errorf("query GitHub releases feed: %w", err)
 		}
-		var list []githubRelease
-		if err := json.Unmarshal(data, &list); err != nil {
-			return nil, fmt.Errorf("decode GitHub releases: %w", err)
+		tag, err := parseLatestTagFromAtom(data)
+		if err != nil {
+			return nil, err
 		}
-		found := false
-		for _, item := range list {
-			if !item.Draft {
-				rel = item
-				found = true
-				break
-			}
-		}
-		if !found {
-			return nil, errors.New("no published releases found")
-		}
+		base = "https://github.com/" + opts.Repo + "/releases/download/" + url.PathEscape(tag)
 	default:
-		data, err := c.fetchBytes(ctx, apiBase+"/releases/latest", maxManifestBytes)
-		if err != nil {
-			return nil, fmt.Errorf("query latest GitHub release: %w", err)
-		}
-		if err := json.Unmarshal(data, &rel); err != nil {
-			return nil, fmt.Errorf("decode GitHub release: %w", err)
-		}
+		base = "https://github.com/" + opts.Repo + "/releases/latest/download"
 	}
 
-	urls := make(map[string]string, len(rel.Assets))
-	for _, a := range rel.Assets {
-		urls[a.Name] = a.BrowserDownloadURL
-	}
-	return urls, nil
+	return map[string]string{
+		"_base":                 base,
+		"release-manifest.json": base + "/release-manifest.json",
+		"checksums.txt":         base + "/checksums.txt",
+	}, nil
 }
 
 func (c *Client) fetchBytes(ctx context.Context, rawURL string, limit int64) ([]byte, error) {
