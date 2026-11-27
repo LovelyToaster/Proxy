@@ -4,8 +4,14 @@
 !include "StrFunc.nsh"
 ${StrStr}
 Var WasRunning
+!ifndef VERSION
+ !define VERSION "0.1.0"
+!endif
+!ifndef OUTFILE
+ !define OUTFILE "..\..\dist\installer\Proxy-Setup-x64.exe"
+!endif
 Name "Proxy"
-OutFile "..\..\dist\installer\Proxy-Setup-x64.exe"
+OutFile "${OUTFILE}"
 InstallDir "$PROGRAMFILES64\Proxy"
 InstallDirRegKey HKLM "Software\ProxyTransparent" "InstallDir"
 RequestExecutionLevel admin
@@ -119,7 +125,7 @@ Section "Proxy"
  WriteRegStr HKLM "Software\ProxyTransparent" "InstallDir" "$INSTDIR"
  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ProxyTransparent" "DisplayName" "Proxy"
  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ProxyTransparent" "UninstallString" '$\"$INSTDIR\Uninstall.exe$\"'
- WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ProxyTransparent" "DisplayVersion" "0.1.0"
+ WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ProxyTransparent" "DisplayVersion" "${VERSION}"
  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ProxyTransparent" "NoModify" 1
  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ProxyTransparent" "NoRepair" 1
  ${If} $WasRunning == 1
